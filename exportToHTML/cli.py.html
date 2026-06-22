@@ -1,0 +1,63 @@
+<html>
+<head>
+<title>cli.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #0033b3;}
+.s1 { color: #080808;}
+.s2 { color: #067d17;}
+.s3 { color: #0037a6;}
+.ln { color: #aeb3c2; font-weight: normal; font-style: normal; }
+</style>
+</head>
+<body bgcolor="#ffffff">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#c0c0c0" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+cli.py</font>
+</center></td></tr></table>
+<pre><a name="l1"><span class="ln">1    </span></a><span class="s0">from </span><span class="s1">__future__ </span><span class="s0">import </span><span class="s1">annotations</span>
+<a name="l2"><span class="ln">2    </span></a>
+<a name="l3"><span class="ln">3    </span></a><span class="s0">import </span><span class="s1">argparse</span>
+<a name="l4"><span class="ln">4    </span></a>
+<a name="l5"><span class="ln">5    </span></a><span class="s0">from </span><span class="s1">data </span><span class="s0">import </span><span class="s1">build_label_items, merge_products, read_codes, read_csv_rows, read_products</span>
+<a name="l6"><span class="ln">6    </span></a><span class="s0">from </span><span class="s1">google_sheets </span><span class="s0">import </span><span class="s1">read_google_sheet_csv</span>
+<a name="l7"><span class="ln">7    </span></a><span class="s0">from </span><span class="s1">pdf_generator </span><span class="s0">import </span><span class="s1">create_labels_pdf</span>
+<a name="l8"><span class="ln">8    </span></a><span class="s0">from </span><span class="s1">validator </span><span class="s0">import </span><span class="s1">LocalCodeValidator</span>
+<a name="l9"><span class="ln">9    </span></a>
+<a name="l10"><span class="ln">10   </span></a>
+<a name="l11"><span class="ln">11   </span></a><span class="s0">def </span><span class="s1">main() -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+<a name="l12"><span class="ln">12   </span></a>    <span class="s1">parser = argparse.ArgumentParser(description=</span><span class="s2">&quot;Generate 58x40 mm Honest Sign labels PDF.&quot;</span><span class="s1">)</span>
+<a name="l13"><span class="ln">13   </span></a>    <span class="s1">parser.add_argument(</span><span class="s2">&quot;--products&quot;</span><span class="s1">, help=</span><span class="s2">&quot;Old mode: CSV file with ready products&quot;</span><span class="s1">)</span>
+<a name="l14"><span class="ln">14   </span></a>    <span class="s1">parser.add_argument(</span><span class="s2">&quot;--nomenclature&quot;</span><span class="s1">, help=</span><span class="s2">&quot;CSV export of sheet 'Отчёт с перечнем номенклатур'&quot;</span><span class="s1">)</span>
+<a name="l15"><span class="ln">15   </span></a>    <span class="s1">parser.add_argument(</span><span class="s2">&quot;--gtin&quot;</span><span class="s1">, help=</span><span class="s2">&quot;CSV export of sheet 'GTIN'&quot;</span><span class="s1">)</span>
+<a name="l16"><span class="ln">16   </span></a>    <span class="s1">parser.add_argument(</span><span class="s2">&quot;--google-sheet-url&quot;</span><span class="s1">, help=</span><span class="s2">&quot;Google Sheets URL or spreadsheet id&quot;</span><span class="s1">)</span>
+<a name="l17"><span class="ln">17   </span></a>    <span class="s1">parser.add_argument(</span><span class="s2">&quot;--nomenclature-sheet&quot;</span><span class="s1">, default=</span><span class="s2">&quot;Отчёт с перечнем номенклатур&quot;</span><span class="s1">)</span>
+<a name="l18"><span class="ln">18   </span></a>    <span class="s1">parser.add_argument(</span><span class="s2">&quot;--gtin-sheet&quot;</span><span class="s1">, default=</span><span class="s2">&quot;GTIN&quot;</span><span class="s1">)</span>
+<a name="l19"><span class="ln">19   </span></a>    <span class="s1">parser.add_argument(</span><span class="s2">&quot;--codes&quot;</span><span class="s1">, required=</span><span class="s0">True</span><span class="s1">, help=</span><span class="s2">&quot;TXT file with Honest Sign codes, one per line&quot;</span><span class="s1">)</span>
+<a name="l20"><span class="ln">20   </span></a>    <span class="s1">parser.add_argument(</span><span class="s2">&quot;--out&quot;</span><span class="s1">, required=</span><span class="s0">True</span><span class="s1">, help=</span><span class="s2">&quot;Output PDF path&quot;</span><span class="s1">)</span>
+<a name="l21"><span class="ln">21   </span></a>    <span class="s1">args = parser.parse_args()</span>
+<a name="l22"><span class="ln">22   </span></a>
+<a name="l23"><span class="ln">23   </span></a>    <span class="s0">if </span><span class="s1">args.google_sheet_url:</span>
+<a name="l24"><span class="ln">24   </span></a>        <span class="s1">nomenclature_rows = read_google_sheet_csv(args.google_sheet_url, args.nomenclature_sheet)</span>
+<a name="l25"><span class="ln">25   </span></a>        <span class="s1">gtin_rows = read_google_sheet_csv(args.google_sheet_url, args.gtin_sheet)</span>
+<a name="l26"><span class="ln">26   </span></a>        <span class="s1">products = merge_products(nomenclature_rows, gtin_rows)</span>
+<a name="l27"><span class="ln">27   </span></a>    <span class="s0">elif </span><span class="s1">args.nomenclature </span><span class="s0">and </span><span class="s1">args.gtin:</span>
+<a name="l28"><span class="ln">28   </span></a>        <span class="s1">products = merge_products(read_csv_rows(args.nomenclature), read_csv_rows(args.gtin))</span>
+<a name="l29"><span class="ln">29   </span></a>    <span class="s0">elif </span><span class="s1">args.products:</span>
+<a name="l30"><span class="ln">30   </span></a>        <span class="s1">products = read_products(args.products)</span>
+<a name="l31"><span class="ln">31   </span></a>    <span class="s0">else</span><span class="s1">:</span>
+<a name="l32"><span class="ln">32   </span></a>        <span class="s0">raise </span><span class="s1">SystemExit(</span><span class="s2">&quot;Укажите --google-sheet-url или пару --nomenclature/--gtin&quot;</span><span class="s1">)</span>
+<a name="l33"><span class="ln">33   </span></a>
+<a name="l34"><span class="ln">34   </span></a>    <span class="s1">codes = read_codes(args.codes)</span>
+<a name="l35"><span class="ln">35   </span></a>    <span class="s1">items = build_label_items(products, codes, LocalCodeValidator())</span>
+<a name="l36"><span class="ln">36   </span></a>    <span class="s1">output = create_labels_pdf(items, args.out)</span>
+<a name="l37"><span class="ln">37   </span></a>    <span class="s1">print(</span><span class="s2">f&quot;PDF готов: </span><span class="s3">{</span><span class="s1">output</span><span class="s3">}</span><span class="s2">&quot;</span><span class="s1">)</span>
+<a name="l38"><span class="ln">38   </span></a>
+<a name="l39"><span class="ln">39   </span></a>
+<a name="l40"><span class="ln">40   </span></a><span class="s0">if </span><span class="s1">__name__ == </span><span class="s2">&quot;__main__&quot;</span><span class="s1">:</span>
+<a name="l41"><span class="ln">41   </span></a>    <span class="s1">main()</span>
+<a name="l42"><span class="ln">42   </span></a>
+<a name="l43"><span class="ln">43   </span></a></pre>
+</body>
+</html>

@@ -1,0 +1,58 @@
+<html>
+<head>
+<title>google_sheets.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #0033b3;}
+.s1 { color: #080808;}
+.s2 { color: #067d17;}
+.s3 { color: #1750eb;}
+.s4 { color: #0037a6;}
+.ln { color: #aeb3c2; font-weight: normal; font-style: normal; }
+</style>
+</head>
+<body bgcolor="#ffffff">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#c0c0c0" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+google_sheets.py</font>
+</center></td></tr></table>
+<pre><a name="l1"><span class="ln">1    </span></a><span class="s0">from </span><span class="s1">__future__ </span><span class="s0">import </span><span class="s1">annotations</span>
+<a name="l2"><span class="ln">2    </span></a>
+<a name="l3"><span class="ln">3    </span></a><span class="s0">import </span><span class="s1">csv</span>
+<a name="l4"><span class="ln">4    </span></a><span class="s0">import </span><span class="s1">io</span>
+<a name="l5"><span class="ln">5    </span></a><span class="s0">import </span><span class="s1">urllib.parse</span>
+<a name="l6"><span class="ln">6    </span></a><span class="s0">import </span><span class="s1">urllib.request</span>
+<a name="l7"><span class="ln">7    </span></a>
+<a name="l8"><span class="ln">8    </span></a>
+<a name="l9"><span class="ln">9    </span></a><span class="s0">def </span><span class="s1">read_google_sheet_csv(spreadsheet_url: str, sheet_name_or_gid: str) -&gt; list[dict[str, str]]:</span>
+<a name="l10"><span class="ln">10   </span></a>    <span class="s1">csv_url = build_csv_export_url(spreadsheet_url, sheet_name_or_gid)</span>
+<a name="l11"><span class="ln">11   </span></a>    <span class="s1">request = urllib.request.Request(csv_url, headers={</span><span class="s2">&quot;User-Agent&quot;</span><span class="s1">: </span><span class="s2">&quot;labelbot/1.0&quot;</span><span class="s1">})</span>
+<a name="l12"><span class="ln">12   </span></a>    <span class="s0">with </span><span class="s1">urllib.request.urlopen(request, timeout=</span><span class="s3">30</span><span class="s1">) </span><span class="s0">as </span><span class="s1">response:</span>
+<a name="l13"><span class="ln">13   </span></a>        <span class="s1">text = response.read().decode(</span><span class="s2">&quot;utf-8-sig&quot;</span><span class="s1">)</span>
+<a name="l14"><span class="ln">14   </span></a>    <span class="s1">reader = csv.DictReader(io.StringIO(text))</span>
+<a name="l15"><span class="ln">15   </span></a>    <span class="s0">return </span><span class="s1">[{key: (value </span><span class="s0">or </span><span class="s2">&quot;&quot;</span><span class="s1">).strip() </span><span class="s0">for </span><span class="s1">key, value </span><span class="s0">in </span><span class="s1">row.items()} </span><span class="s0">for </span><span class="s1">row </span><span class="s0">in </span><span class="s1">reader </span><span class="s0">if </span><span class="s1">any(row.values())]</span>
+<a name="l16"><span class="ln">16   </span></a>
+<a name="l17"><span class="ln">17   </span></a>
+<a name="l18"><span class="ln">18   </span></a><span class="s0">def </span><span class="s1">build_csv_export_url(spreadsheet_url: str, sheet_name_or_gid: str) -&gt; str:</span>
+<a name="l19"><span class="ln">19   </span></a>    <span class="s1">sheet_id = extract_spreadsheet_id(spreadsheet_url)</span>
+<a name="l20"><span class="ln">20   </span></a>    <span class="s1">value = str(sheet_name_or_gid </span><span class="s0">or </span><span class="s2">&quot;&quot;</span><span class="s1">).strip()</span>
+<a name="l21"><span class="ln">21   </span></a>    <span class="s0">if </span><span class="s1">value.isdigit():</span>
+<a name="l22"><span class="ln">22   </span></a>        <span class="s0">return </span><span class="s2">f&quot;https://docs.google.com/spreadsheets/d/</span><span class="s4">{</span><span class="s1">sheet_id</span><span class="s4">}</span><span class="s2">/export?format=csv&amp;gid=</span><span class="s4">{</span><span class="s1">value</span><span class="s4">}</span><span class="s2">&quot;</span>
+<a name="l23"><span class="ln">23   </span></a>    <span class="s1">encoded_sheet = urllib.parse.quote(value)</span>
+<a name="l24"><span class="ln">24   </span></a>    <span class="s0">return </span><span class="s2">f&quot;https://docs.google.com/spreadsheets/d/</span><span class="s4">{</span><span class="s1">sheet_id</span><span class="s4">}</span><span class="s2">/gviz/tq?tqx=out:csv&amp;sheet=</span><span class="s4">{</span><span class="s1">encoded_sheet</span><span class="s4">}</span><span class="s2">&quot;</span>
+<a name="l25"><span class="ln">25   </span></a>
+<a name="l26"><span class="ln">26   </span></a>
+<a name="l27"><span class="ln">27   </span></a><span class="s0">def </span><span class="s1">extract_spreadsheet_id(spreadsheet_url: str) -&gt; str:</span>
+<a name="l28"><span class="ln">28   </span></a>    <span class="s1">parts = urllib.parse.urlparse(spreadsheet_url)</span>
+<a name="l29"><span class="ln">29   </span></a>    <span class="s1">path_parts = [part </span><span class="s0">for </span><span class="s1">part </span><span class="s0">in </span><span class="s1">parts.path.split(</span><span class="s2">&quot;/&quot;</span><span class="s1">) </span><span class="s0">if </span><span class="s1">part]</span>
+<a name="l30"><span class="ln">30   </span></a>    <span class="s0">if </span><span class="s2">&quot;d&quot; </span><span class="s0">in </span><span class="s1">path_parts:</span>
+<a name="l31"><span class="ln">31   </span></a>        <span class="s1">index = path_parts.index(</span><span class="s2">&quot;d&quot;</span><span class="s1">)</span>
+<a name="l32"><span class="ln">32   </span></a>        <span class="s0">if </span><span class="s1">index + </span><span class="s3">1 </span><span class="s1">&lt; len(path_parts):</span>
+<a name="l33"><span class="ln">33   </span></a>            <span class="s0">return </span><span class="s1">path_parts[index + </span><span class="s3">1</span><span class="s1">]</span>
+<a name="l34"><span class="ln">34   </span></a>    <span class="s0">if </span><span class="s1">spreadsheet_url </span><span class="s0">and </span><span class="s2">&quot;/&quot; </span><span class="s0">not in </span><span class="s1">spreadsheet_url:</span>
+<a name="l35"><span class="ln">35   </span></a>        <span class="s0">return </span><span class="s1">spreadsheet_url</span>
+<a name="l36"><span class="ln">36   </span></a>    <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">&quot;Не удалось понять ссылку Google Sheets&quot;</span><span class="s1">)</span>
+<a name="l37"><span class="ln">37   </span></a></pre>
+</body>
+</html>

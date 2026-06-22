@@ -1,0 +1,154 @@
+<html>
+<head>
+<title>data.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #0033b3;}
+.s1 { color: #080808;}
+.s2 { color: #067d17;}
+.s3 { color: #1750eb;}
+.s4 { color: #0037a6;}
+.ln { color: #aeb3c2; font-weight: normal; font-style: normal; }
+</style>
+</head>
+<body bgcolor="#ffffff">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#c0c0c0" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+data.py</font>
+</center></td></tr></table>
+<pre><a name="l1"><span class="ln">1    </span></a><span class="s0">from </span><span class="s1">__future__ </span><span class="s0">import </span><span class="s1">annotations</span>
+<a name="l2"><span class="ln">2    </span></a>
+<a name="l3"><span class="ln">3    </span></a><span class="s0">import </span><span class="s1">csv</span>
+<a name="l4"><span class="ln">4    </span></a><span class="s0">from </span><span class="s1">pathlib </span><span class="s0">import </span><span class="s1">Path</span>
+<a name="l5"><span class="ln">5    </span></a>
+<a name="l6"><span class="ln">6    </span></a><span class="s0">from </span><span class="s1">models </span><span class="s0">import </span><span class="s1">LabelItem, Product</span>
+<a name="l7"><span class="ln">7    </span></a><span class="s0">from </span><span class="s1">validator </span><span class="s0">import </span><span class="s1">LocalCodeValidator, extract_gtin, normalize_gtin</span>
+<a name="l8"><span class="ln">8    </span></a>
+<a name="l9"><span class="ln">9    </span></a>
+<a name="l10"><span class="ln">10   </span></a><span class="s1">FIELD_ALIASES = {</span>
+<a name="l11"><span class="ln">11   </span></a>    <span class="s2">&quot;brand&quot;</span><span class="s1">: (</span><span class="s2">&quot;Бренд&quot;</span><span class="s1">, </span><span class="s2">&quot;brand&quot;</span><span class="s1">),</span>
+<a name="l12"><span class="ln">12   </span></a>    <span class="s2">&quot;subject&quot;</span><span class="s1">: (</span><span class="s2">&quot;Предмет&quot;</span><span class="s1">, </span><span class="s2">&quot;Название товара&quot;</span><span class="s1">, </span><span class="s2">&quot;Товар&quot;</span><span class="s1">, </span><span class="s2">&quot;name&quot;</span><span class="s1">),</span>
+<a name="l13"><span class="ln">13   </span></a>    <span class="s2">&quot;seller_article&quot;</span><span class="s1">: (</span><span class="s2">&quot;Артикул продавца&quot;</span><span class="s1">, </span><span class="s2">&quot;Артикул&quot;</span><span class="s1">, </span><span class="s2">&quot;АРТИКУЛ&quot;</span><span class="s1">, </span><span class="s2">&quot;article&quot;</span><span class="s1">),</span>
+<a name="l14"><span class="ln">14   </span></a>    <span class="s2">&quot;wb_article&quot;</span><span class="s1">: (</span><span class="s2">&quot;Артикул WB&quot;</span><span class="s1">, </span><span class="s2">&quot;WB&quot;</span><span class="s1">, </span><span class="s2">&quot;Номенклатура&quot;</span><span class="s1">),</span>
+<a name="l15"><span class="ln">15   </span></a>    <span class="s2">&quot;size&quot;</span><span class="s1">: (</span><span class="s2">&quot;Размер&quot;</span><span class="s1">, </span><span class="s2">&quot;size&quot;</span><span class="s1">),</span>
+<a name="l16"><span class="ln">16   </span></a>    <span class="s2">&quot;color&quot;</span><span class="s1">: (</span><span class="s2">&quot;Цвет&quot;</span><span class="s1">, </span><span class="s2">&quot;color&quot;</span><span class="s1">),</span>
+<a name="l17"><span class="ln">17   </span></a>    <span class="s2">&quot;supplier&quot;</span><span class="s1">: (</span><span class="s2">&quot;Поставщик&quot;</span><span class="s1">, </span><span class="s2">&quot;Название поставщика&quot;</span><span class="s1">, </span><span class="s2">&quot;supplier&quot;</span><span class="s1">),</span>
+<a name="l18"><span class="ln">18   </span></a>    <span class="s2">&quot;barcode&quot;</span><span class="s1">: (</span><span class="s2">&quot;Баркод&quot;</span><span class="s1">, </span><span class="s2">&quot;Штрихкод&quot;</span><span class="s1">, </span><span class="s2">&quot;barcode&quot;</span><span class="s1">, </span><span class="s2">&quot;bar_code&quot;</span><span class="s1">),</span>
+<a name="l19"><span class="ln">19   </span></a>    <span class="s2">&quot;gtin&quot;</span><span class="s1">: (</span><span class="s2">&quot;GTIN&quot;</span><span class="s1">, </span><span class="s2">&quot;ГТИН&quot;</span><span class="s1">, </span><span class="s2">&quot;gtin&quot;</span><span class="s1">),</span>
+<a name="l20"><span class="ln">20   </span></a>    <span class="s2">&quot;composition&quot;</span><span class="s1">: (</span><span class="s2">&quot;Состав&quot;</span><span class="s1">, </span><span class="s2">&quot;composition&quot;</span><span class="s1">),</span>
+<a name="l21"><span class="ln">21   </span></a><span class="s1">}</span>
+<a name="l22"><span class="ln">22   </span></a>
+<a name="l23"><span class="ln">23   </span></a>
+<a name="l24"><span class="ln">24   </span></a><span class="s0">def </span><span class="s1">read_csv_rows(path: str | Path) -&gt; list[dict[str, str]]:</span>
+<a name="l25"><span class="ln">25   </span></a>    <span class="s1">path = Path(path)</span>
+<a name="l26"><span class="ln">26   </span></a>    <span class="s0">with </span><span class="s1">path.open(</span><span class="s2">&quot;r&quot;</span><span class="s1">, encoding=</span><span class="s2">&quot;utf-8-sig&quot;</span><span class="s1">, newline=</span><span class="s2">&quot;&quot;</span><span class="s1">) </span><span class="s0">as </span><span class="s1">handle:</span>
+<a name="l27"><span class="ln">27   </span></a>        <span class="s1">reader = csv.DictReader(handle)</span>
+<a name="l28"><span class="ln">28   </span></a>        <span class="s0">return </span><span class="s1">[{key: (value </span><span class="s0">or </span><span class="s2">&quot;&quot;</span><span class="s1">).strip() </span><span class="s0">for </span><span class="s1">key, value </span><span class="s0">in </span><span class="s1">row.items()} </span><span class="s0">for </span><span class="s1">row </span><span class="s0">in </span><span class="s1">reader </span><span class="s0">if </span><span class="s1">any(row.values())]</span>
+<a name="l29"><span class="ln">29   </span></a>
+<a name="l30"><span class="ln">30   </span></a>
+<a name="l31"><span class="ln">31   </span></a><span class="s0">def </span><span class="s1">read_products(path: str | Path) -&gt; list[Product]:</span>
+<a name="l32"><span class="ln">32   </span></a>    <span class="s1">rows = read_csv_rows(path)</span>
+<a name="l33"><span class="ln">33   </span></a>    <span class="s0">return </span><span class="s1">[_row_to_product(row) </span><span class="s0">for </span><span class="s1">row </span><span class="s0">in </span><span class="s1">rows]</span>
+<a name="l34"><span class="ln">34   </span></a>
+<a name="l35"><span class="ln">35   </span></a>
+<a name="l36"><span class="ln">36   </span></a><span class="s0">def </span><span class="s1">read_codes(path: str | Path) -&gt; list[str]:</span>
+<a name="l37"><span class="ln">37   </span></a>    <span class="s1">path = Path(path)</span>
+<a name="l38"><span class="ln">38   </span></a>    <span class="s0">return </span><span class="s1">[line.strip() </span><span class="s0">for </span><span class="s1">line </span><span class="s0">in </span><span class="s1">path.read_text(encoding=</span><span class="s2">&quot;utf-8-sig&quot;</span><span class="s1">).splitlines() </span><span class="s0">if </span><span class="s1">line.strip()]</span>
+<a name="l39"><span class="ln">39   </span></a>
+<a name="l40"><span class="ln">40   </span></a>
+<a name="l41"><span class="ln">41   </span></a><span class="s0">def </span><span class="s1">merge_products(nomenclature_rows: list[dict[str, str]], gtin_rows: list[dict[str, str]]) -&gt; list[Product]:</span>
+<a name="l42"><span class="ln">42   </span></a>    <span class="s1">gtin_by_barcode: dict[str, str] = {}</span>
+<a name="l43"><span class="ln">43   </span></a>    <span class="s1">color_by_barcode: dict[str, str] = {}</span>
+<a name="l44"><span class="ln">44   </span></a>    <span class="s0">for </span><span class="s1">row </span><span class="s0">in </span><span class="s1">gtin_rows:</span>
+<a name="l45"><span class="ln">45   </span></a>        <span class="s1">barcode = only_digits(_get(row, </span><span class="s2">&quot;barcode&quot;</span><span class="s1">))</span>
+<a name="l46"><span class="ln">46   </span></a>        <span class="s1">gtin = normalize_gtin(_get(row, </span><span class="s2">&quot;gtin&quot;</span><span class="s1">))</span>
+<a name="l47"><span class="ln">47   </span></a>        <span class="s1">gtin_article = _get(row, </span><span class="s2">&quot;seller_article&quot;</span><span class="s1">)</span>
+<a name="l48"><span class="ln">48   </span></a>        <span class="s0">if </span><span class="s1">barcode </span><span class="s0">and </span><span class="s1">gtin:</span>
+<a name="l49"><span class="ln">49   </span></a>            <span class="s1">gtin_by_barcode[barcode] = gtin</span>
+<a name="l50"><span class="ln">50   </span></a>        <span class="s0">if </span><span class="s1">barcode:</span>
+<a name="l51"><span class="ln">51   </span></a>            <span class="s1">color = _extract_color(gtin_article)</span>
+<a name="l52"><span class="ln">52   </span></a>            <span class="s0">if </span><span class="s1">color:</span>
+<a name="l53"><span class="ln">53   </span></a>                <span class="s1">color_by_barcode[barcode] = color</span>
+<a name="l54"><span class="ln">54   </span></a>
+<a name="l55"><span class="ln">55   </span></a>    <span class="s1">products: list[Product] = []</span>
+<a name="l56"><span class="ln">56   </span></a>    <span class="s0">for </span><span class="s1">row </span><span class="s0">in </span><span class="s1">nomenclature_rows:</span>
+<a name="l57"><span class="ln">57   </span></a>        <span class="s1">barcode = only_digits(_get(row, </span><span class="s2">&quot;barcode&quot;</span><span class="s1">))</span>
+<a name="l58"><span class="ln">58   </span></a>        <span class="s0">if not </span><span class="s1">barcode:</span>
+<a name="l59"><span class="ln">59   </span></a>            <span class="s0">continue</span>
+<a name="l60"><span class="ln">60   </span></a>        <span class="s1">product = _row_to_product(row)</span>
+<a name="l61"><span class="ln">61   </span></a>        <span class="s1">products.append(</span>
+<a name="l62"><span class="ln">62   </span></a>            <span class="s1">Product(</span>
+<a name="l63"><span class="ln">63   </span></a>                <span class="s1">brand=product.brand,</span>
+<a name="l64"><span class="ln">64   </span></a>                <span class="s1">subject=product.subject,</span>
+<a name="l65"><span class="ln">65   </span></a>                <span class="s1">seller_article=product.seller_article,</span>
+<a name="l66"><span class="ln">66   </span></a>                <span class="s1">wb_article=product.wb_article,</span>
+<a name="l67"><span class="ln">67   </span></a>                <span class="s1">size=product.size,</span>
+<a name="l68"><span class="ln">68   </span></a>                <span class="s1">color=product.color </span><span class="s0">or </span><span class="s1">color_by_barcode.get(barcode, </span><span class="s2">&quot;&quot;</span><span class="s1">),</span>
+<a name="l69"><span class="ln">69   </span></a>                <span class="s1">supplier=product.supplier </span><span class="s0">or </span><span class="s2">&quot;ОсОО ТКЛ&quot;</span><span class="s1">,</span>
+<a name="l70"><span class="ln">70   </span></a>                <span class="s1">barcode=barcode,</span>
+<a name="l71"><span class="ln">71   </span></a>                <span class="s1">gtin=gtin_by_barcode.get(barcode, </span><span class="s2">&quot;&quot;</span><span class="s1">),</span>
+<a name="l72"><span class="ln">72   </span></a>                <span class="s1">composition=product.composition,</span>
+<a name="l73"><span class="ln">73   </span></a>            <span class="s1">)</span>
+<a name="l74"><span class="ln">74   </span></a>        <span class="s1">)</span>
+<a name="l75"><span class="ln">75   </span></a>    <span class="s0">return </span><span class="s1">products</span>
+<a name="l76"><span class="ln">76   </span></a>
+<a name="l77"><span class="ln">77   </span></a>
+<a name="l78"><span class="ln">78   </span></a><span class="s0">def </span><span class="s1">build_label_items(products: list[Product], codes: list[str], validator: LocalCodeValidator) -&gt; list[LabelItem]:</span>
+<a name="l79"><span class="ln">79   </span></a>    <span class="s1">product_by_gtin = {normalize_gtin(product.gtin): product </span><span class="s0">for </span><span class="s1">product </span><span class="s0">in </span><span class="s1">products </span><span class="s0">if </span><span class="s1">product.gtin}</span>
+<a name="l80"><span class="ln">80   </span></a>    <span class="s1">items: list[LabelItem] = []</span>
+<a name="l81"><span class="ln">81   </span></a>    <span class="s1">unused_products = iter(products)</span>
+<a name="l82"><span class="ln">82   </span></a>
+<a name="l83"><span class="ln">83   </span></a>    <span class="s0">for </span><span class="s1">index, code </span><span class="s0">in </span><span class="s1">enumerate(codes, start=</span><span class="s3">1</span><span class="s1">):</span>
+<a name="l84"><span class="ln">84   </span></a>        <span class="s1">code_gtin = normalize_gtin(extract_gtin(code))</span>
+<a name="l85"><span class="ln">85   </span></a>        <span class="s1">product = product_by_gtin.get(code_gtin) </span><span class="s0">if </span><span class="s1">code_gtin </span><span class="s0">else None</span>
+<a name="l86"><span class="ln">86   </span></a>        <span class="s0">if </span><span class="s1">product </span><span class="s0">is None</span><span class="s1">:</span>
+<a name="l87"><span class="ln">87   </span></a>            <span class="s1">product = next(unused_products, </span><span class="s0">None</span><span class="s1">)</span>
+<a name="l88"><span class="ln">88   </span></a>        <span class="s0">if </span><span class="s1">product </span><span class="s0">is None</span><span class="s1">:</span>
+<a name="l89"><span class="ln">89   </span></a>            <span class="s0">raise </span><span class="s1">ValueError(</span><span class="s2">f&quot;Для кода #</span><span class="s4">{</span><span class="s1">index</span><span class="s4">} </span><span class="s2">не найден товар&quot;</span><span class="s1">)</span>
+<a name="l90"><span class="ln">90   </span></a>        <span class="s1">mark_code = validator.check_code(code, expected_gtin=product.gtin)</span>
+<a name="l91"><span class="ln">91   </span></a>        <span class="s1">items.append(LabelItem(product=product, mark_code=mark_code, index=index))</span>
+<a name="l92"><span class="ln">92   </span></a>
+<a name="l93"><span class="ln">93   </span></a>    <span class="s0">return </span><span class="s1">items</span>
+<a name="l94"><span class="ln">94   </span></a>
+<a name="l95"><span class="ln">95   </span></a>
+<a name="l96"><span class="ln">96   </span></a><span class="s0">def </span><span class="s1">_row_to_product(row: dict[str, str]) -&gt; Product:</span>
+<a name="l97"><span class="ln">97   </span></a>    <span class="s0">return </span><span class="s1">Product(</span>
+<a name="l98"><span class="ln">98   </span></a>        <span class="s1">brand=_get(row, </span><span class="s2">&quot;brand&quot;</span><span class="s1">),</span>
+<a name="l99"><span class="ln">99   </span></a>        <span class="s1">subject=_get(row, </span><span class="s2">&quot;subject&quot;</span><span class="s1">),</span>
+<a name="l100"><span class="ln">100  </span></a>        <span class="s1">seller_article=_get(row, </span><span class="s2">&quot;seller_article&quot;</span><span class="s1">),</span>
+<a name="l101"><span class="ln">101  </span></a>        <span class="s1">wb_article=only_digits(_get(row, </span><span class="s2">&quot;wb_article&quot;</span><span class="s1">)),</span>
+<a name="l102"><span class="ln">102  </span></a>        <span class="s1">size=_get(row, </span><span class="s2">&quot;size&quot;</span><span class="s1">),</span>
+<a name="l103"><span class="ln">103  </span></a>        <span class="s1">color=_extract_color(_get(row, </span><span class="s2">&quot;seller_article&quot;</span><span class="s1">)) </span><span class="s0">or </span><span class="s1">_get(row, </span><span class="s2">&quot;color&quot;</span><span class="s1">),</span>
+<a name="l104"><span class="ln">104  </span></a>        <span class="s1">supplier=_get(row, </span><span class="s2">&quot;supplier&quot;</span><span class="s1">),</span>
+<a name="l105"><span class="ln">105  </span></a>        <span class="s1">barcode=only_digits(_get(row, </span><span class="s2">&quot;barcode&quot;</span><span class="s1">)),</span>
+<a name="l106"><span class="ln">106  </span></a>        <span class="s1">gtin=normalize_gtin(_get(row, </span><span class="s2">&quot;gtin&quot;</span><span class="s1">)),</span>
+<a name="l107"><span class="ln">107  </span></a>        <span class="s1">composition=_get(row, </span><span class="s2">&quot;composition&quot;</span><span class="s1">),</span>
+<a name="l108"><span class="ln">108  </span></a>    <span class="s1">)</span>
+<a name="l109"><span class="ln">109  </span></a>
+<a name="l110"><span class="ln">110  </span></a>
+<a name="l111"><span class="ln">111  </span></a><span class="s0">def </span><span class="s1">_get(row: dict[str, str], field: str) -&gt; str:</span>
+<a name="l112"><span class="ln">112  </span></a>    <span class="s0">for </span><span class="s1">alias </span><span class="s0">in </span><span class="s1">FIELD_ALIASES[field]:</span>
+<a name="l113"><span class="ln">113  </span></a>        <span class="s0">if </span><span class="s1">alias </span><span class="s0">in </span><span class="s1">row </span><span class="s0">and </span><span class="s1">row[alias] </span><span class="s0">is not None</span><span class="s1">:</span>
+<a name="l114"><span class="ln">114  </span></a>            <span class="s0">return </span><span class="s1">str(row[alias]).strip()</span>
+<a name="l115"><span class="ln">115  </span></a>    <span class="s0">return </span><span class="s2">&quot;&quot;</span>
+<a name="l116"><span class="ln">116  </span></a>
+<a name="l117"><span class="ln">117  </span></a>
+<a name="l118"><span class="ln">118  </span></a><span class="s0">def </span><span class="s1">_extract_color(article: str) -&gt; str:</span>
+<a name="l119"><span class="ln">119  </span></a>    <span class="s1">marker = </span><span class="s2">&quot;ц:&quot;</span>
+<a name="l120"><span class="ln">120  </span></a>    <span class="s0">if </span><span class="s1">marker </span><span class="s0">not in </span><span class="s1">article:</span>
+<a name="l121"><span class="ln">121  </span></a>        <span class="s0">return </span><span class="s2">&quot;&quot;</span>
+<a name="l122"><span class="ln">122  </span></a>    <span class="s1">color = article.split(marker, </span><span class="s3">1</span><span class="s1">)[</span><span class="s3">1</span><span class="s1">]</span>
+<a name="l123"><span class="ln">123  </span></a>    <span class="s0">for </span><span class="s1">separator </span><span class="s0">in </span><span class="s1">(</span><span class="s2">&quot;;&quot;</span><span class="s1">, </span><span class="s2">&quot;, р:&quot;</span><span class="s1">, </span><span class="s2">&quot;,р:&quot;</span><span class="s1">, </span><span class="s2">&quot; р:&quot;</span><span class="s1">):</span>
+<a name="l124"><span class="ln">124  </span></a>        <span class="s1">color = color.split(separator, </span><span class="s3">1</span><span class="s1">)[</span><span class="s3">0</span><span class="s1">]</span>
+<a name="l125"><span class="ln">125  </span></a>    <span class="s0">return </span><span class="s1">color.strip()</span>
+<a name="l126"><span class="ln">126  </span></a>
+<a name="l127"><span class="ln">127  </span></a>
+<a name="l128"><span class="ln">128  </span></a><span class="s0">def </span><span class="s1">only_digits(value: str) -&gt; str:</span>
+<a name="l129"><span class="ln">129  </span></a>    <span class="s0">return </span><span class="s2">&quot;&quot;</span><span class="s1">.join(ch </span><span class="s0">for </span><span class="s1">ch </span><span class="s0">in </span><span class="s1">str(value </span><span class="s0">or </span><span class="s2">&quot;&quot;</span><span class="s1">) </span><span class="s0">if </span><span class="s1">ch.isdigit())</span>
+<a name="l130"><span class="ln">130  </span></a>
+<a name="l131"><span class="ln">131  </span></a>
+<a name="l132"><span class="ln">132  </span></a>
+<a name="l133"><span class="ln">133  </span></a></pre>
+</body>
+</html>
