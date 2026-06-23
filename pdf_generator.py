@@ -31,7 +31,7 @@ BARCODE_Y = 4.4 * mm
 BARCODE_W = 70.0 * mm
 BARCODE_H = 12.3 * mm
 BARCODE_NUMBER_X = 10 * mm
-BARCODE_NUMBER_Y = 17.5 * mm
+BARCODE_NUMBER_Y = 16.5 * mm
 BARCODE_NUMBER_W = 20 * mm
 BARCODE_NUMBER_H = 2.5 * mm
 TOP_NUMBER_X = 50.0 * mm
@@ -39,7 +39,7 @@ TOP_NUMBER_Y = 5.8 * mm
 TOP_NUMBER_W = 4 * mm
 TOP_NUMBER_H = 5 * mm
 PRODUCT_X = 2 * mm
-PRODUCT_Y = 17.4 * mm
+PRODUCT_Y = 19.4 * mm
 PRODUCT_W = 22 * mm
 PRODUCT_H = 5 * mm
 
@@ -60,11 +60,11 @@ DM_X = 30.6 * mm
 VERTICAL_X = 54.4 * mm
 EAC_X = 20.1 * mm
 
-ARTICLE_Y = 20 * mm
-WB_Y = 23 * mm
-SIZE_Y = 26 * mm
-COLOR_Y = 29 * mm
-SUPPLIER_Y = 31 * mm
+ARTICLE_Y = 22 * mm
+WB_Y = 25 * mm
+SIZE_Y = 28 * mm
+COLOR_Y = 31 * mm
+SUPPLIER_Y = 33 * mm
 DM_Y = 18.5 * mm
 VERTICAL_Y = 18.6 * mm
 EAC_Y = 33.7 * mm
@@ -156,14 +156,40 @@ def _draw_mark_code(canvas: Canvas, code: str) -> None:
     dm_image = create_datamatrix_image(code)
     canvas.drawImage(ImageReader(dm_image), DM_X, dm_y, width=DM_W, height=DM_H, mask="auto")
 
+    _draw_vertical_mark_text(canvas, code)
+
+    _draw_eac(canvas, EAC_X, from_top(EAC_Y, EAC_H), 5.8)
+
+
+def _draw_vertical_mark_text(canvas: Canvas, code: str) -> None:
+    font_size = 2.0
+    line_gap = 1.05 * mm
+    lines = _split_text_to_width(str(code or ""), VERTICAL_H, FONT_REGULAR, font_size)
     canvas.saveState()
     canvas.translate(VERTICAL_X, from_top(VERTICAL_Y, VERTICAL_H))
     canvas.rotate(90)
-    canvas.setFont(FONT_REGULAR, 2.8)
-    canvas.drawString(0, 0, _fit_text(code, VERTICAL_H, FONT_REGULAR, 2.8))
+    canvas.setFont(FONT_REGULAR, font_size)
+    for index, line in enumerate(lines):
+        canvas.drawString(0, -index * line_gap, line)
     canvas.restoreState()
 
-    _draw_eac(canvas, EAC_X, from_top(EAC_Y, EAC_H), 5.8)
+
+def _split_text_to_width(text: str, max_width: float, font: str, size: float) -> list[str]:
+    text = str(text or "")
+    if not text:
+        return [""]
+    lines: list[str] = []
+    current = ""
+    for char in text:
+        candidate = current + char
+        if current and stringWidth(candidate, font, size) > max_width:
+            lines.append(current)
+            current = char
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
 
 def create_datamatrix_image(code: str) -> Image.Image:
     payload = prepare_marking_code_for_datamatrix(code)
