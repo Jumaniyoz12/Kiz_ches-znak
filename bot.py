@@ -87,7 +87,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(f"Не смог прочитать файл с КИЗами: {exc}")
         return
 
-    await make_pdf(update, context, codes)
+    context.user_data["pending_codes"] = codes
+    context.user_data["awaiting_batch_number"] = True
+    await update.message.reply_text(
+        f"Получил КИЗов: {len(codes)}. Напишите номер партии, например: 0295",
+        reply_markup=MAIN_KEYBOARD,
+    )
 
 
 async def handle_wb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -113,6 +118,15 @@ async def handle_codes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     text = update.message.text.strip()
+    if context.user_data.pop("awaiting_batch_number", False):
+        codes = context.user_data.pop("pending_codes", [])
+        batch_number = text.strip()
+        if not codes:
+            await update.message.reply_text("КИЗы не найдены. Отправьте файл ещё раз.", reply_markup=MAIN_KEYBOARD)
+            return
+        await make_pdf(update, context, codes, batch_number=batch_number)
+        return
+
     awaiting_mode = context.user_data.pop("awaiting_barcode_mode", None)
     if awaiting_mode:
         await make_barcode_pdf(update, context, text, mode=awaiting_mode)
@@ -175,7 +189,7 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     return False
 
-async def make_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, codes: list[str]) -> None:
+async def make_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, codes: list[str], batch_number: str = "") -> None:
     sheet_url = context.user_data.get("sheet_url") or os.environ.get("GOOGLE_SHEET_URL")
     if not sheet_url:
         await update.message.reply_text("Сначала отправьте ссылку: /sheet https://docs.google.com/spreadsheets/d/...")
@@ -208,7 +222,7 @@ async def make_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, codes: li
 
         items = analysis["items"]
         readability = check_datamatrix_readability(items[0].mark_code.raw) if items else ""
-        outputs = create_auto_outputs(items, temp_dir)
+        outputs = create_auto_outputs(items, temp_dir, batch_number=batch_number)
         out_name = ", ".join(name for _, name in outputs)
         remember_printed_codes(items, out_name, update.effective_user)
     except Exception as exc:
@@ -391,21 +405,21 @@ def group_items_by_product(items: list[LabelItem]) -> list[list[LabelItem]]:
     return result
 
 
-def create_auto_outputs(items: list[LabelItem], temp_dir: Path) -> list[tuple[Path, str]]:
+def create_auto_outputs(items: list[LabelItem], temp_dir: Path, batch_number: str = "") -> list[tuple[Path, str]]:
     groups = group_items_by_product(items)
     if len(groups) > 3:
-        return [create_zip_from_groups(groups, temp_dir)]
+        return [create_zip_from_groups(groups, temp_dir, batch_number=batch_number)]
 
     outputs: list[tuple[Path, str]] = []
     for grouped_items in groups:
         pdf_name = build_pdf_filename(grouped_items)
         pdf_path = temp_dir / pdf_name
-        create_labels_pdf(grouped_items, pdf_path, info_page=build_info_page(grouped_items))
+        create_labels_pdf(grouped_items, pdf_path, info_page=build_info_page(grouped_items, batch_number=batch_number))
         outputs.append((pdf_path, pdf_name))
     return outputs
 
 
-def create_zip_from_groups(groups: list[list[LabelItem]], temp_dir: Path) -> tuple[Path, str]:
+def create_zip_from_groups(groups: list[list[LabelItem]], temp_dir: Path, batch_number: str = "") -> tuple[Path, str]:
     total = sum(len(group) for group in groups)
     today = datetime.now().strftime("%Y-%m-%d")
     zip_name = safe_filename(f"labels_{total}шт_{today}") + ".zip"
@@ -414,17 +428,17 @@ def create_zip_from_groups(groups: list[list[LabelItem]], temp_dir: Path) -> tup
         for grouped_items in groups:
             pdf_name = build_pdf_filename(grouped_items)
             pdf_path = temp_dir / pdf_name
-            create_labels_pdf(grouped_items, pdf_path, info_page=build_info_page(grouped_items))
+            create_labels_pdf(grouped_items, pdf_path, info_page=build_info_page(grouped_items, batch_number=batch_number))
             archive.write(pdf_path, arcname=pdf_name)
     return zip_path, zip_name
 
 
-def build_info_page(items: list[LabelItem]) -> dict[str, str]:
+def build_info_page(items: list[LabelItem], batch_number: str = "") -> dict[str, str]:
     first = items[0].product if items else None
     if first is None:
         return {}
     today = datetime.now().strftime("%Y-%m-%d")
-    batch = safe_filename(f"{first.seller_article}_{first.size}_{today}_{len(items)}шт")
+    batch = str(batch_number or "").strip() or safe_filename(f"{first.seller_article}_{first.size}_{today}_{len(items)}шт")
     return {
         "date": today,
         "batch": batch,
@@ -527,19 +541,28 @@ async def send_stats(update: Update, start_date: str | None = None, end_date: st
             params,
         ).fetchall()
         by_user = conn.execute(
-            "SELECT user_name, COUNT(*) FROM printed_codes WHERE printed_at >= ? AND printed_at < ? GROUP BY user_name ORDER BY COUNT(*) DESC LIMIT 10",
+            "SELECT user_name, COUNT(*), MIN(printed_at), MAX(printed_at) FROM printed_codes WHERE printed_at >= ? AND printed_at < ? GROUP BY user_name ORDER BY COUNT(*) DESC LIMIT 10",
             params,
         ).fetchall()
     title = f"Статистика за {start_date}" if start_date == end_date else f"Статистика {start_date} - {end_date}"
-    lines = [title + ":", f"Этикеток за период: {total_period}", f"Всего в базе: {total_all}"]
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines = [title + ":", f"Время отчёта: {generated_at}", f"Этикеток за период: {total_period}", f"Всего в базе: {total_all}"]
     if by_user:
         lines.append("\nКто печатал:")
-        lines.extend(f"{name}: {count} шт" for name, count in by_user)
+        lines.extend(f"{name}: {count} шт ({format_time_range(first_at, last_at)})" for name, count, first_at, last_at in by_user)
     if by_article:
         lines.append("\nПо артикулам:")
         lines.extend(f"{article} / {size}: {count} шт" for article, size, count in by_article)
     await update.message.reply_text("\n".join(lines), reply_markup=MAIN_KEYBOARD)
 
+
+
+def format_time_range(first_at: str, last_at: str) -> str:
+    first_time = str(first_at or "")[11:16]
+    last_time = str(last_at or "")[11:16]
+    if first_time and last_time and first_time != last_time:
+        return f"{first_time}-{last_time}"
+    return first_time or last_time or "--:--"
 
 def parse_stat_period(args: list[str]) -> tuple[str | None, str | None]:
     if not args:

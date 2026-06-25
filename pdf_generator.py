@@ -115,8 +115,8 @@ def _draw_info_page(canvas: Canvas, info: dict[str, str]) -> None:
     canvas.setLineWidth(0.25)
     canvas.rect(0.8 * mm, 0.8 * mm, LABEL_W - 1.6 * mm, LABEL_H - 1.6 * mm)
 
-    canvas.setFont(FONT_BOLD, 7.2)
-    canvas.drawCentredString(LABEL_W / 2, from_top(1.8 * mm, 4 * mm), "ИНФО ПАРТИИ")
+    canvas.setFont(FONT_BOLD, 8.4)
+    canvas.drawCentredString(LABEL_W / 2, from_top(1.4 * mm, 4 * mm), "ИНФО ПАРТИИ")
 
     rows = [
         ("Дата", info.get("date", "")),
@@ -130,15 +130,15 @@ def _draw_info_page(canvas: Canvas, info: dict[str, str]) -> None:
         ("Поставщик", info.get("supplier", "")),
     ]
 
-    y = from_top(8.0 * mm, 2.2 * mm)
+    y = from_top(7.4 * mm, 2.2 * mm)
     for label, value in rows:
-        canvas.setFont(FONT_REGULAR, 3.4)
+        canvas.setFont(FONT_BOLD, 4.1)
         canvas.drawString(2 * mm, y, f"{label}:")
-        canvas.setFont(FONT_BOLD, 3.8)
-        canvas.drawString(17 * mm, y, _fit_text(value, 38 * mm, FONT_BOLD, 3.8))
-        y -= 3.1 * mm
+        canvas.setFont(FONT_BOLD, 4.4)
+        canvas.drawString(18 * mm, y, _fit_text(value, 37 * mm, FONT_BOLD, 4.4))
+        y -= 3.15 * mm
 
-    canvas.setFont(FONT_REGULAR, 2.8)
+    canvas.setFont(FONT_BOLD, 3.0)
     canvas.drawRightString(LABEL_W - 2 * mm, 2.0 * mm, "Последняя страница не для товара")
 
 def _draw_label(canvas: Canvas, item: LabelItem, include_mark_code: bool = True) -> None:
