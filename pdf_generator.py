@@ -132,11 +132,13 @@ def _draw_info_page(canvas: Canvas, info: dict[str, str]) -> None:
 
     y = from_top(7.4 * mm, 2.2 * mm)
     for label, value in rows:
-        canvas.setFont(FONT_BOLD, 4.1)
+        label_size = 4.8 if label in ("Дата", "Партия") else 4.1
+        value_size = 5.3 if label in ("Дата", "Партия") else 4.4
+        canvas.setFont(FONT_BOLD, label_size)
         canvas.drawString(2 * mm, y, f"{label}:")
-        canvas.setFont(FONT_BOLD, 4.4)
-        canvas.drawString(18 * mm, y, _fit_text(value, 37 * mm, FONT_BOLD, 4.4))
-        y -= 3.15 * mm
+        canvas.setFont(FONT_BOLD, value_size)
+        canvas.drawString(18 * mm, y, _fit_text(value, 37 * mm, FONT_BOLD, value_size))
+        y -= 3.35 * mm if label in ("Дата", "Партия") else 3.05 * mm
 
     canvas.setFont(FONT_BOLD, 3.0)
     canvas.drawRightString(LABEL_W - 2 * mm, 2.0 * mm, "Последняя страница не для товара")

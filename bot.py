@@ -87,10 +87,20 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(f"Не смог прочитать файл с КИЗами: {exc}")
         return
 
-    context.user_data["pending_codes"] = codes
+    pending_codes = context.user_data.setdefault("pending_codes", [])
+    pending_codes.extend(codes)
+    total_codes = len(pending_codes)
+
+    if context.user_data.get("awaiting_batch_number"):
+        await update.message.reply_text(
+            f"Добавил файл: {len(codes)} КИЗ. Всего в общей партии: {total_codes} КИЗ.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
     context.user_data["awaiting_batch_number"] = True
     await update.message.reply_text(
-        f"Получил КИЗов: {len(codes)}. Напишите номер партии, например: 0295",
+        f"Получил КИЗов: {total_codes}. Если файлов несколько, отправьте все файлы сейчас. Потом напишите номер партии, например: 0295",
         reply_markup=MAIN_KEYBOARD,
     )
 
