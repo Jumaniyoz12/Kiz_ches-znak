@@ -32,6 +32,7 @@ class LocalCodeValidator:
         return MarkCode(raw=code, gtin=gtin, is_valid=True, message="")
 
 
+
 def extract_gtin(code: str) -> str | None:
     compact = code.strip()
     match = GTIN_RE.search(compact)

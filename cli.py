@@ -28,7 +28,7 @@ def main() -> None:
         products = merge_products(read_csv_rows(args.nomenclature), read_csv_rows(args.gtin))
     elif args.products:
         products = read_products(args.products)
-    else:
+    else   :
         raise SystemExit("Укажите --google-sheet-url или пару --nomenclature/--gtin")
 
     codes = read_codes(args.codes)

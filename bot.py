@@ -338,7 +338,7 @@ def read_codes_from_csv(text: str) -> list[str]:
 
 def main() -> None:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
+    if not     token:
         raise RuntimeError("Укажите TELEGRAM_BOT_TOKEN")
 
     app = Application.builder().token(token).build()

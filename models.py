@@ -15,6 +15,7 @@ class Product:
     composition: str = ""
 
 
+
 @dataclass(frozen=True)
 class MarkCode:
     raw: str

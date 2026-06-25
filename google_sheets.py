@@ -15,6 +15,8 @@ def read_google_sheet_csv(spreadsheet_url: str, sheet_name_or_gid: str) -> list[
     return [{key: (value or "").strip() for key, value in row.items()} for row in reader if any(row.values())]
 
 
+
+
 def build_csv_export_url(spreadsheet_url: str, sheet_name_or_gid: str) -> str:
     sheet_id = extract_spreadsheet_id(spreadsheet_url)
     value = str(sheet_name_or_gid or "").strip()

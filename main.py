@@ -2,6 +2,8 @@
 import os
 
 
+
+
 def load_env(path: str = ".env") -> None:
     env_path = Path(__file__).with_name(path)
     if not env_path.exists():

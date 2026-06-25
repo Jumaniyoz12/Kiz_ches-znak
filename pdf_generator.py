@@ -18,6 +18,7 @@ from reportlab.pdfgen.canvas import Canvas
 from models import LabelItem
 
 
+
 LABEL_W = 58 * mm
 LABEL_H = 40 * mm
 

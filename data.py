@@ -116,7 +116,7 @@ def _get(row: dict[str, str], field: str) -> str:
 
 
 def _extract_color(article: str) -> str:
-    marker = "ц:"
+    marker   = "ц:"
     if marker not in article:
         return ""
     color = article.split(marker, 1)[1]
