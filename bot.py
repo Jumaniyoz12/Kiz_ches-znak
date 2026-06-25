@@ -4,13 +4,14 @@ import csv
 import json
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 import time
 import zipfile
 from collections import Counter, defaultdict
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -35,12 +36,11 @@ APP_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = APP_DIR / "output"
 DB_PATH = OUTPUT_DIR / "labelbot.db"
 PRODUCTS_CACHE_FILE = OUTPUT_DIR / "products_cache.json"
+BACKUP_DIR = OUTPUT_DIR / "backup"
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["📊 Проанализировать", "📦 Режим PDF"],
         ["📈 Статистика", "🔎 Проверить таблицу"],
-        ["💳 Баланс - Оплата"],
         ["❓ Команды", "↻ Сброс"],
     ],
     resize_keyboard=True,
@@ -52,7 +52,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.clear()
     await update.message.reply_text(
         "Бот готов. Данные товара беру из Google Sheets.\n\n"
-        "Для больших партий нажмите 📊 Проанализировать и отправьте файл .txt или .csv с КИЗами.\n"
+        "Отправьте файл .txt или .csv с КИЗами — бот сам проверит GTIN, дубли и товары.\n"
+        "Если получится больше 3 PDF по артикулам, бот сам отправит ZIP.\n"
         "Для штрихкодов без ЧЗ используйте: /wb 705719577 или /art АртикулПродавца.",
         reply_markup=MAIN_KEYBOARD,
     )
@@ -142,34 +143,12 @@ async def handle_codes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     text = update.message.text.strip()
 
-    if text == "📊 Проанализировать":
-        await update.message.reply_text(
-            "Отправьте файл .csv или .txt с КИЗами. Один КИЗ = одна этикетка.",
-            reply_markup=MAIN_KEYBOARD,
-        )
-        return True
-
-    if text == "📦 Режим PDF":
-        current = context.user_data.get("output_mode", "pdf")
-        new_mode = "zip" if current == "pdf" else "pdf"
-        context.user_data["output_mode"] = new_mode
-        label = "ZIP по артикулам" if new_mode == "zip" else "один PDF"
-        await update.message.reply_text(f"Режим печати: {label}.", reply_markup=MAIN_KEYBOARD)
-        return True
-
     if text == "📈 Статистика":
         await send_stats(update)
         return True
 
     if text == "🔎 Проверить таблицу":
         await check_sheet(update, context)
-        return True
-
-    if text == "💳 Баланс - Оплата":
-        await update.message.reply_text(
-            "Раздел оплаты пока не подключен. Сейчас бот работает без оплаты.",
-            reply_markup=MAIN_KEYBOARD,
-        )
         return True
 
     if text == "❓ Команды":
@@ -179,10 +158,10 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "/sheet ссылка - сменить Google Sheets\n"
             "/wb 705719577 - PDF штрихкодов без ЧЗ по Артикул WB\n"
             "/art ДвоСпортЧерный-01 - PDF штрихкодов без ЧЗ по Артикул продавца\n"
-            "/stat - статистика печати\n"
-            "/pdf - режим один PDF\n"
-            "/zip - режим ZIP по артикулам\n\n"
-            "Для PDF с ЧЗ просто отправьте .csv/.txt файл с КИЗами.",
+            "/stat - статистика за сегодня\n"
+            "/stat 2026-06-01 2026-06-25 - статистика за период\n\n"
+            "Для PDF с ЧЗ просто отправьте .csv/.txt файл с КИЗами. "
+            "Бот сам решит: один PDF, несколько PDF или ZIP.",
             reply_markup=MAIN_KEYBOARD,
         )
         return True
@@ -190,7 +169,7 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if text == "↻ Сброс":
         context.user_data.clear()
         PRODUCTS_CACHE.clear()
-        await update.message.reply_text("Сбросил временные данные.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Сбросил временные данные и кэш Google Sheets.", reply_markup=MAIN_KEYBOARD)
         await start(update, context)
         return True
 
@@ -229,35 +208,25 @@ async def make_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, codes: li
 
         items = analysis["items"]
         readability = check_datamatrix_readability(items[0].mark_code.raw) if items else ""
-        mode = context.user_data.get("output_mode", "pdf")
-        if mode == "zip":
-            output_path, out_name = create_zip_by_products(items, temp_dir)
-        else:
-            out_name = build_pdf_filename(items)
-            output_path = temp_dir / out_name
-            create_labels_pdf(items, output_path)
-
+        outputs = create_auto_outputs(items, temp_dir)
+        out_name = ", ".join(name for _, name in outputs)
         remember_printed_codes(items, out_name, update.effective_user)
     except Exception as exc:
         await update.message.reply_text(f"Не удалось создать PDF: {human_error(exc)}")
         return
 
-    await update.message.reply_document(document=output_path.open("rb"), filename=out_name)
+    for output_path, file_name in outputs:
+        await update.message.reply_document(document=output_path.open("rb"), filename=file_name)
     if readability:
         await update.message.reply_text(readability, reply_markup=MAIN_KEYBOARD)
 
-async def set_pdf_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data["output_mode"] = "pdf"
-    await update.message.reply_text("Режим печати: один PDF.", reply_markup=MAIN_KEYBOARD)
-
-
-async def set_zip_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data["output_mode"] = "zip"
-    await update.message.reply_text("Режим печати: ZIP по артикулам.", reply_markup=MAIN_KEYBOARD)
-
-
 async def stat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await send_stats(update)
+    try:
+        start_date, end_date = parse_stat_period(context.args)
+    except ValueError:
+        await update.message.reply_text("Дата должна быть так: /stat 2026-06-01 2026-06-25", reply_markup=MAIN_KEYBOARD)
+        return
+    await send_stats(update, start_date=start_date, end_date=end_date)
 
 
 async def make_barcode_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str, mode: str) -> None:
@@ -408,6 +377,66 @@ def write_rows_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
+
+def group_items_by_product(items: list[LabelItem]) -> list[list[LabelItem]]:
+    groups: dict[tuple[str, str], list[LabelItem]] = defaultdict(list)
+    for item in items:
+        groups[(item.product.seller_article, item.product.size)].append(item)
+    result: list[list[LabelItem]] = []
+    for grouped_items in groups.values():
+        result.append([
+            LabelItem(product=item.product, mark_code=item.mark_code, index=index)
+            for index, item in enumerate(grouped_items, start=1)
+        ])
+    return result
+
+
+def create_auto_outputs(items: list[LabelItem], temp_dir: Path) -> list[tuple[Path, str]]:
+    groups = group_items_by_product(items)
+    if len(groups) > 3:
+        return [create_zip_from_groups(groups, temp_dir)]
+
+    outputs: list[tuple[Path, str]] = []
+    for grouped_items in groups:
+        pdf_name = build_pdf_filename(grouped_items)
+        pdf_path = temp_dir / pdf_name
+        create_labels_pdf(grouped_items, pdf_path, info_page=build_info_page(grouped_items))
+        outputs.append((pdf_path, pdf_name))
+    return outputs
+
+
+def create_zip_from_groups(groups: list[list[LabelItem]], temp_dir: Path) -> tuple[Path, str]:
+    total = sum(len(group) for group in groups)
+    today = datetime.now().strftime("%Y-%m-%d")
+    zip_name = safe_filename(f"labels_{total}шт_{today}") + ".zip"
+    zip_path = temp_dir / zip_name
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for grouped_items in groups:
+            pdf_name = build_pdf_filename(grouped_items)
+            pdf_path = temp_dir / pdf_name
+            create_labels_pdf(grouped_items, pdf_path, info_page=build_info_page(grouped_items))
+            archive.write(pdf_path, arcname=pdf_name)
+    return zip_path, zip_name
+
+
+def build_info_page(items: list[LabelItem]) -> dict[str, str]:
+    first = items[0].product if items else None
+    if first is None:
+        return {}
+    today = datetime.now().strftime("%Y-%m-%d")
+    batch = safe_filename(f"{first.seller_article}_{first.size}_{today}_{len(items)}шт")
+    return {
+        "date": today,
+        "batch": batch,
+        "count": str(len(items)),
+        "brand": first.brand,
+        "subject": first.subject,
+        "seller_article": first.seller_article,
+        "wb_article": first.wb_article,
+        "size": first.size,
+        "supplier": first.supplier,
+    }
+
 def create_zip_by_products(items: list[LabelItem], temp_dir: Path) -> tuple[Path, str]:
     today = datetime.now().strftime("%Y-%m-%d")
     groups: dict[tuple[str, str], list[LabelItem]] = defaultdict(list)
@@ -422,7 +451,7 @@ def create_zip_by_products(items: list[LabelItem], temp_dir: Path) -> tuple[Path
                 grouped_items[idx - 1] = LabelItem(product=item.product, mark_code=item.mark_code, index=idx)
             pdf_name = build_pdf_filename(grouped_items)
             pdf_path = temp_dir / pdf_name
-            create_labels_pdf(grouped_items, pdf_path)
+            create_labels_pdf(grouped_items, pdf_path, info_page=build_info_page(grouped_items))
             archive.write(pdf_path, arcname=pdf_name)
     return zip_path, zip_name
 
@@ -445,6 +474,16 @@ def init_db() -> None:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS printed_codes (code TEXT PRIMARY KEY, gtin TEXT, article TEXT, size TEXT, file_name TEXT, user_name TEXT, printed_at TEXT)"
         )
+    backup_db_once_daily()
+
+
+def backup_db_once_daily() -> None:
+    if not DB_PATH.exists():
+        return
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+    backup_path = BACKUP_DIR / f"labelbot_{today}.db"
+    shutil.copy2(DB_PATH, backup_path)
 
 
 def load_used_codes() -> dict[str, dict[str, str]]:
@@ -467,23 +506,32 @@ def remember_printed_codes(items: list[LabelItem], file_name: str, user) -> None
                 "INSERT OR IGNORE INTO printed_codes (code, gtin, article, size, file_name, user_name, printed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (item.mark_code.raw, item.mark_code.gtin or "", item.product.seller_article, item.product.size, file_name, user_name, printed_at),
             )
+    backup_db_once_daily()
 
 
-async def send_stats(update: Update) -> None:
+async def send_stats(update: Update, start_date: str | None = None, end_date: str | None = None) -> None:
     init_db()
-    today = datetime.now().strftime("%Y-%m-%d")
+    if not start_date:
+        start_date = datetime.now().strftime("%Y-%m-%d")
+    if not end_date:
+        end_date = start_date
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+
     with sqlite3.connect(DB_PATH) as conn:
-        total_today = conn.execute("SELECT COUNT(*) FROM printed_codes WHERE printed_at LIKE ?", (today + "%",)).fetchone()[0]
+        params = (start_dt.strftime("%Y-%m-%d %H:%M:%S"), end_dt.strftime("%Y-%m-%d %H:%M:%S"))
+        total_period = conn.execute("SELECT COUNT(*) FROM printed_codes WHERE printed_at >= ? AND printed_at < ?", params).fetchone()[0]
         total_all = conn.execute("SELECT COUNT(*) FROM printed_codes").fetchone()[0]
         by_article = conn.execute(
-            "SELECT article, size, COUNT(*) FROM printed_codes WHERE printed_at LIKE ? GROUP BY article, size ORDER BY COUNT(*) DESC LIMIT 10",
-            (today + "%",),
+            "SELECT article, size, COUNT(*) FROM printed_codes WHERE printed_at >= ? AND printed_at < ? GROUP BY article, size ORDER BY COUNT(*) DESC LIMIT 10",
+            params,
         ).fetchall()
         by_user = conn.execute(
-            "SELECT user_name, COUNT(*) FROM printed_codes WHERE printed_at LIKE ? GROUP BY user_name ORDER BY COUNT(*) DESC LIMIT 10",
-            (today + "%",),
+            "SELECT user_name, COUNT(*) FROM printed_codes WHERE printed_at >= ? AND printed_at < ? GROUP BY user_name ORDER BY COUNT(*) DESC LIMIT 10",
+            params,
         ).fetchall()
-    lines = [f"Статистика за сегодня ({today}):", f"Этикеток сегодня: {total_today}", f"Всего в базе: {total_all}"]
+    title = f"Статистика за {start_date}" if start_date == end_date else f"Статистика {start_date} - {end_date}"
+    lines = [title + ":", f"Этикеток за период: {total_period}", f"Всего в базе: {total_all}"]
     if by_user:
         lines.append("\nКто печатал:")
         lines.extend(f"{name}: {count} шт" for name, count in by_user)
@@ -492,6 +540,20 @@ async def send_stats(update: Update) -> None:
         lines.extend(f"{article} / {size}: {count} шт" for article, size, count in by_article)
     await update.message.reply_text("\n".join(lines), reply_markup=MAIN_KEYBOARD)
 
+
+def parse_stat_period(args: list[str]) -> tuple[str | None, str | None]:
+    if not args:
+        return None, None
+    if len(args) == 1:
+        validate_date(args[0])
+        return args[0], args[0]
+    validate_date(args[0])
+    validate_date(args[1])
+    return args[0], args[1]
+
+
+def validate_date(value: str) -> None:
+    datetime.strptime(value, "%Y-%m-%d")
 
 async def check_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     sheet_url = context.user_data.get("sheet_url") or os.environ.get("GOOGLE_SHEET_URL")
@@ -608,8 +670,6 @@ def main() -> None:
     app.add_handler(CommandHandler("sheet", set_sheet))
     app.add_handler(CommandHandler("wb", handle_wb))
     app.add_handler(CommandHandler("art", handle_art))
-    app.add_handler(CommandHandler("pdf", set_pdf_mode))
-    app.add_handler(CommandHandler("zip", set_zip_mode))
     app.add_handler(CommandHandler("stat", stat_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_codes))

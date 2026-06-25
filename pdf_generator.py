@@ -88,7 +88,12 @@ FONT_REGULAR = "Arial"
 FONT_BOLD = "Arial-Bold"
 
 
-def create_labels_pdf(items: list[LabelItem], output_path: str | Path, include_mark_code: bool = True) -> Path:
+def create_labels_pdf(
+    items: list[LabelItem],
+    output_path: str | Path,
+    include_mark_code: bool = True,
+    info_page: dict[str, str] | None = None,
+) -> Path:
     _register_fonts()
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,9 +102,44 @@ def create_labels_pdf(items: list[LabelItem], output_path: str | Path, include_m
     for item in items:
         _draw_label(canvas, item, include_mark_code=include_mark_code)
         canvas.showPage()
+    if info_page:
+        _draw_info_page(canvas, info_page)
+        canvas.showPage()
     canvas.save()
     return output_path
 
+
+
+def _draw_info_page(canvas: Canvas, info: dict[str, str]) -> None:
+    canvas.setStrokeColor(colors.black)
+    canvas.setLineWidth(0.25)
+    canvas.rect(0.8 * mm, 0.8 * mm, LABEL_W - 1.6 * mm, LABEL_H - 1.6 * mm)
+
+    canvas.setFont(FONT_BOLD, 7.2)
+    canvas.drawCentredString(LABEL_W / 2, from_top(1.8 * mm, 4 * mm), "ИНФО ПАРТИИ")
+
+    rows = [
+        ("Дата", info.get("date", "")),
+        ("Партия", info.get("batch", "")),
+        ("КИЗ", info.get("count", "")),
+        ("Бренд", info.get("brand", "")),
+        ("Предмет", info.get("subject", "")),
+        ("Артикул", info.get("seller_article", "")),
+        ("WB арт", info.get("wb_article", "")),
+        ("Размер", info.get("size", "")),
+        ("Поставщик", info.get("supplier", "")),
+    ]
+
+    y = from_top(8.0 * mm, 2.2 * mm)
+    for label, value in rows:
+        canvas.setFont(FONT_REGULAR, 3.4)
+        canvas.drawString(2 * mm, y, f"{label}:")
+        canvas.setFont(FONT_BOLD, 3.8)
+        canvas.drawString(17 * mm, y, _fit_text(value, 38 * mm, FONT_BOLD, 3.8))
+        y -= 3.1 * mm
+
+    canvas.setFont(FONT_REGULAR, 2.8)
+    canvas.drawRightString(LABEL_W - 2 * mm, 2.0 * mm, "Последняя страница не для товара")
 
 def _draw_label(canvas: Canvas, item: LabelItem, include_mark_code: bool = True) -> None:
     product = item.product
