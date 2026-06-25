@@ -1,10 +1,15 @@
 ﻿from __future__ import annotations
 
 import csv
+import json
 import os
 import re
+import sqlite3
 import tempfile
 import time
+import zipfile
+from collections import Counter, defaultdict
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
@@ -13,11 +18,11 @@ from pathlib import Path
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from data import build_label_items, merge_products, only_digits
+from data import merge_products, only_digits
 from google_sheets import read_google_sheet_csv
-from pdf_generator import create_labels_pdf
-from models import LabelItem, MarkCode
-from validator import LocalCodeValidator
+from pdf_generator import create_datamatrix_image, create_labels_pdf
+from models import LabelItem, MarkCode, Product
+from validator import LocalCodeValidator, extract_gtin, normalize_gtin
 
 
 NOMENCLATURE_SHEET = "Отчёт с перечнем номенклатур"
@@ -26,9 +31,15 @@ CODE_HEADERS = ("киз", "код", "код маркировки", "честны
 CODE_START_RE = re.compile(r"(?=01\d{14})")
 CACHE_TTL_SECONDS = 600
 PRODUCTS_CACHE: dict[tuple[str, str, str], tuple[float, list]] = {}
+APP_DIR = Path(__file__).resolve().parent
+OUTPUT_DIR = APP_DIR / "output"
+DB_PATH = OUTPUT_DIR / "labelbot.db"
+PRODUCTS_CACHE_FILE = OUTPUT_DIR / "products_cache.json"
+
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["📊 Проанализировать"],
+        ["📊 Проанализировать", "📦 Режим PDF"],
+        ["📈 Статистика", "🔎 Проверить таблицу"],
         ["💳 Баланс - Оплата"],
         ["❓ Команды", "↻ Сброс"],
     ],
@@ -138,6 +149,22 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return True
 
+    if text == "📦 Режим PDF":
+        current = context.user_data.get("output_mode", "pdf")
+        new_mode = "zip" if current == "pdf" else "pdf"
+        context.user_data["output_mode"] = new_mode
+        label = "ZIP по артикулам" if new_mode == "zip" else "один PDF"
+        await update.message.reply_text(f"Режим печати: {label}.", reply_markup=MAIN_KEYBOARD)
+        return True
+
+    if text == "📈 Статистика":
+        await send_stats(update)
+        return True
+
+    if text == "🔎 Проверить таблицу":
+        await check_sheet(update, context)
+        return True
+
     if text == "💳 Баланс - Оплата":
         await update.message.reply_text(
             "Раздел оплаты пока не подключен. Сейчас бот работает без оплаты.",
@@ -151,7 +178,10 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "/start - показать меню\n"
             "/sheet ссылка - сменить Google Sheets\n"
             "/wb 705719577 - PDF штрихкодов без ЧЗ по Артикул WB\n"
-            "/art ДвоСпортЧерный-01 - PDF штрихкодов без ЧЗ по Артикул продавца\n\n"
+            "/art ДвоСпортЧерный-01 - PDF штрихкодов без ЧЗ по Артикул продавца\n"
+            "/stat - статистика печати\n"
+            "/pdf - режим один PDF\n"
+            "/zip - режим ZIP по артикулам\n\n"
             "Для PDF с ЧЗ просто отправьте .csv/.txt файл с КИЗами.",
             reply_markup=MAIN_KEYBOARD,
         )
@@ -178,17 +208,57 @@ async def make_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, codes: li
     temp_dir = Path(tempfile.mkdtemp(prefix="labelbot_"))
 
     try:
-        await update.message.reply_text(f"Получил КИЗов: {len(codes)}. Готовлю PDF...", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text(f"Получил КИЗов: {len(codes)}. Проверяю GTIN и товары...", reply_markup=MAIN_KEYBOARD)
         products = get_products(sheet_url)
-        items = build_label_items(products, codes, LocalCodeValidator())
-        pdf_name = build_pdf_filename(items)
-        output_path = temp_dir / pdf_name
-        create_labels_pdf(items, output_path)
+        analysis = build_items_with_report(products, codes)
+        report_text = build_analysis_message(analysis)
+        await update.message.reply_text(report_text, reply_markup=MAIN_KEYBOARD)
+
+        if analysis["duplicate_used"]:
+            report_path = temp_dir / "used_kiz_duplicates.csv"
+            write_rows_csv(report_path, analysis["duplicate_used"])
+            await update.message.reply_document(document=report_path.open("rb"), filename=report_path.name)
+
+        if analysis["not_found"] or analysis["invalid_gtin"]:
+            report_path = temp_dir / "not_found.csv"
+            write_rows_csv(report_path, analysis["not_found"] + analysis["invalid_gtin"])
+            await update.message.reply_document(document=report_path.open("rb"), filename=report_path.name)
+            if not analysis["items"]:
+                await update.message.reply_text("Нет этикеток для печати: все КИЗы с ошибками.")
+                return
+
+        items = analysis["items"]
+        readability = check_datamatrix_readability(items[0].mark_code.raw) if items else ""
+        mode = context.user_data.get("output_mode", "pdf")
+        if mode == "zip":
+            output_path, out_name = create_zip_by_products(items, temp_dir)
+        else:
+            out_name = build_pdf_filename(items)
+            output_path = temp_dir / out_name
+            create_labels_pdf(items, output_path)
+
+        remember_printed_codes(items, out_name, update.effective_user)
     except Exception as exc:
-        await update.message.reply_text(f"Не удалось создать PDF: {exc}")
+        await update.message.reply_text(f"Не удалось создать PDF: {human_error(exc)}")
         return
 
-    await update.message.reply_document(document=output_path.open("rb"), filename=pdf_name)
+    await update.message.reply_document(document=output_path.open("rb"), filename=out_name)
+    if readability:
+        await update.message.reply_text(readability, reply_markup=MAIN_KEYBOARD)
+
+async def set_pdf_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["output_mode"] = "pdf"
+    await update.message.reply_text("Режим печати: один PDF.", reply_markup=MAIN_KEYBOARD)
+
+
+async def set_zip_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["output_mode"] = "zip"
+    await update.message.reply_text("Режим печати: ZIP по артикулам.", reply_markup=MAIN_KEYBOARD)
+
+
+async def stat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await send_stats(update)
+
 
 async def make_barcode_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str, mode: str) -> None:
     sheet_url = context.user_data.get("sheet_url") or os.environ.get("GOOGLE_SHEET_URL")
@@ -263,12 +333,204 @@ def get_products(sheet_url: str):
     if cached and now - cached[0] < CACHE_TTL_SECONDS:
         return cached[1]
 
-    nomenclature_rows = read_google_sheet_csv(sheet_url, nomenclature_sheet)
-    gtin_rows = read_google_sheet_csv(sheet_url, gtin_sheet)
-    products = merge_products(nomenclature_rows, gtin_rows)
+    try:
+        nomenclature_rows = read_google_sheet_csv(sheet_url, nomenclature_sheet)
+        gtin_rows = read_google_sheet_csv(sheet_url, gtin_sheet)
+        products = merge_products(nomenclature_rows, gtin_rows)
+        save_products_local(products)
+    except Exception:
+        products = load_products_local()
+        if not products:
+            raise
     PRODUCTS_CACHE[cache_key] = (now, products)
     return products
 
+
+
+def build_items_with_report(products: list[Product], codes: list[str]) -> dict:
+    validator = LocalCodeValidator()
+    product_by_gtin = {normalize_gtin(product.gtin): product for product in products if normalize_gtin(product.gtin)}
+    used_codes = load_used_codes()
+    items: list[LabelItem] = []
+    invalid_gtin: list[dict[str, str]] = []
+    not_found: list[dict[str, str]] = []
+    duplicate_used: list[dict[str, str]] = []
+    seen_in_file = Counter(codes)
+
+    for index, code in enumerate(codes, start=1):
+        gtin14 = extract_gtin(code)
+        gtin = normalize_gtin(gtin14)
+        base_row = {"Номер": str(index), "GTIN": gtin or "", "КИЗ": code}
+        if not gtin or len(gtin) != 13 or not gtin.startswith("470"):
+            invalid_gtin.append({**base_row, "Причина": "GTIN должен быть 13 цифр и начинаться с 470"})
+            continue
+        product = product_by_gtin.get(gtin)
+        if product is None:
+            not_found.append({**base_row, "Причина": "GTIN не найден в Google Sheets/локальной базе"})
+            continue
+        if code in used_codes:
+            old = used_codes[code]
+            duplicate_used.append({**base_row, "Причина": f"Уже печатался {old.get('printed_at', '')} файл {old.get('file_name', '')}"})
+        mark_code = validator.check_code(code, expected_gtin=product.gtin)
+        items.append(LabelItem(product=product, mark_code=mark_code, index=len(items) + 1))
+
+    duplicates_in_file = sum(count - 1 for count in seen_in_file.values() if count > 1)
+    return {
+        "items": items,
+        "invalid_gtin": invalid_gtin,
+        "not_found": not_found,
+        "duplicate_used": duplicate_used,
+        "duplicates_in_file": duplicates_in_file,
+        "total": len(codes),
+    }
+
+
+def build_analysis_message(analysis: dict) -> str:
+    return (
+        "Проверка готова:\n"
+        f"Всего КИЗ: {analysis['total']}\n"
+        f"Будет напечатано: {len(analysis['items'])}\n"
+        f"Ошибки GTIN: {len(analysis['invalid_gtin'])}\n"
+        f"Не найден товар: {len(analysis['not_found'])}\n"
+        f"Уже печатались: {len(analysis['duplicate_used'])}\n"
+        f"Дубли внутри файла: {analysis['duplicates_in_file']}"
+    )
+
+
+def write_rows_csv(path: Path, rows: list[dict[str, str]]) -> None:
+    if not rows:
+        path.write_text("", encoding="utf-8-sig")
+        return
+    headers = list(rows[0].keys())
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=headers)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def create_zip_by_products(items: list[LabelItem], temp_dir: Path) -> tuple[Path, str]:
+    today = datetime.now().strftime("%Y-%m-%d")
+    groups: dict[tuple[str, str], list[LabelItem]] = defaultdict(list)
+    for item in items:
+        groups[(item.product.seller_article, item.product.size)].append(item)
+
+    zip_name = safe_filename(f"labels_{len(items)}шт_{today}") + ".zip"
+    zip_path = temp_dir / zip_name
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for grouped_items in groups.values():
+            for idx, item in enumerate(grouped_items, start=1):
+                grouped_items[idx - 1] = LabelItem(product=item.product, mark_code=item.mark_code, index=idx)
+            pdf_name = build_pdf_filename(grouped_items)
+            pdf_path = temp_dir / pdf_name
+            create_labels_pdf(grouped_items, pdf_path)
+            archive.write(pdf_path, arcname=pdf_name)
+    return zip_path, zip_name
+
+
+def check_datamatrix_readability(code: str) -> str:
+    try:
+        from pylibdmtx.pylibdmtx import decode as decode_datamatrix
+        image = create_datamatrix_image(code)
+        decoded = decode_datamatrix(image)
+        if decoded:
+            return "✅ DataMatrix проверен: код создаётся и читается программно."
+        return "⚠️ DataMatrix не прочитался программно. Проверь размер/белое поле перед печатью."
+    except Exception as exc:
+        return f"⚠️ Проверка DataMatrix недоступна: {exc}"
+
+
+def init_db() -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS printed_codes (code TEXT PRIMARY KEY, gtin TEXT, article TEXT, size TEXT, file_name TEXT, user_name TEXT, printed_at TEXT)"
+        )
+
+
+def load_used_codes() -> dict[str, dict[str, str]]:
+    init_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("SELECT code, gtin, article, size, file_name, user_name, printed_at FROM printed_codes").fetchall()
+    return {
+        row[0]: {"gtin": row[1], "article": row[2], "size": row[3], "file_name": row[4], "user_name": row[5], "printed_at": row[6]}
+        for row in rows
+    }
+
+
+def remember_printed_codes(items: list[LabelItem], file_name: str, user) -> None:
+    init_db()
+    user_name = getattr(user, "full_name", None) or getattr(user, "username", None) or "unknown"
+    printed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(DB_PATH) as conn:
+        for item in items:
+            conn.execute(
+                "INSERT OR IGNORE INTO printed_codes (code, gtin, article, size, file_name, user_name, printed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (item.mark_code.raw, item.mark_code.gtin or "", item.product.seller_article, item.product.size, file_name, user_name, printed_at),
+            )
+
+
+async def send_stats(update: Update) -> None:
+    init_db()
+    today = datetime.now().strftime("%Y-%m-%d")
+    with sqlite3.connect(DB_PATH) as conn:
+        total_today = conn.execute("SELECT COUNT(*) FROM printed_codes WHERE printed_at LIKE ?", (today + "%",)).fetchone()[0]
+        total_all = conn.execute("SELECT COUNT(*) FROM printed_codes").fetchone()[0]
+        by_article = conn.execute(
+            "SELECT article, size, COUNT(*) FROM printed_codes WHERE printed_at LIKE ? GROUP BY article, size ORDER BY COUNT(*) DESC LIMIT 10",
+            (today + "%",),
+        ).fetchall()
+        by_user = conn.execute(
+            "SELECT user_name, COUNT(*) FROM printed_codes WHERE printed_at LIKE ? GROUP BY user_name ORDER BY COUNT(*) DESC LIMIT 10",
+            (today + "%",),
+        ).fetchall()
+    lines = [f"Статистика за сегодня ({today}):", f"Этикеток сегодня: {total_today}", f"Всего в базе: {total_all}"]
+    if by_user:
+        lines.append("\nКто печатал:")
+        lines.extend(f"{name}: {count} шт" for name, count in by_user)
+    if by_article:
+        lines.append("\nПо артикулам:")
+        lines.extend(f"{article} / {size}: {count} шт" for article, size, count in by_article)
+    await update.message.reply_text("\n".join(lines), reply_markup=MAIN_KEYBOARD)
+
+
+async def check_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    sheet_url = context.user_data.get("sheet_url") or os.environ.get("GOOGLE_SHEET_URL")
+    if not sheet_url:
+        await update.message.reply_text("Сначала отправьте ссылку: /sheet https://docs.google.com/spreadsheets/d/...")
+        return
+    try:
+        products = get_products(sheet_url)
+        barcode_counts = Counter(product.barcode for product in products if product.barcode)
+        gtin_counts = Counter(normalize_gtin(product.gtin) for product in products if normalize_gtin(product.gtin))
+        barcode_dupes = [code for code, count in barcode_counts.items() if count > 1]
+        gtin_dupes = [code for code, count in gtin_counts.items() if count > 1]
+        msg = (
+            f"Проверка таблицы:\nТоваров: {len(products)}\n"
+            f"Дубли баркодов: {len(barcode_dupes)}\nДубли GTIN: {len(gtin_dupes)}\n"
+            f"Локальная база обновлена: {PRODUCTS_CACHE_FILE.name}"
+        )
+        await update.message.reply_text(msg, reply_markup=MAIN_KEYBOARD)
+    except Exception as exc:
+        await update.message.reply_text(f"Не смог проверить таблицу: {human_error(exc)}", reply_markup=MAIN_KEYBOARD)
+
+
+def save_products_local(products: list[Product]) -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    PRODUCTS_CACHE_FILE.write_text(json.dumps([asdict(product) for product in products], ensure_ascii=False), encoding="utf-8")
+
+
+def load_products_local() -> list[Product]:
+    if not PRODUCTS_CACHE_FILE.exists():
+        return []
+    rows = json.loads(PRODUCTS_CACHE_FILE.read_text(encoding="utf-8"))
+    return [Product(**row) for row in rows]
+
+
+def human_error(exc: Exception) -> str:
+    text = str(exc)
+    if "handshake operation timed out" in text or "timed out" in text:
+        return "Google таблица долго не отвечает. Бот попробует локальную базу, если она уже была сохранена."
+    return text
 
 def build_pdf_filename(items) -> str:
     today = datetime.now().strftime("%Y-%m-%d")
@@ -346,6 +608,9 @@ def main() -> None:
     app.add_handler(CommandHandler("sheet", set_sheet))
     app.add_handler(CommandHandler("wb", handle_wb))
     app.add_handler(CommandHandler("art", handle_art))
+    app.add_handler(CommandHandler("pdf", set_pdf_mode))
+    app.add_handler(CommandHandler("zip", set_zip_mode))
+    app.add_handler(CommandHandler("stat", stat_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_codes))
     app.run_polling()
