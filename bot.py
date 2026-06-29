@@ -93,15 +93,17 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if context.user_data.get("awaiting_batch_number"):
         await update.message.reply_text(
-            f"Добавил файл: {len(codes)} КИЗ. Всего в общей партии: {total_codes} КИЗ.",
+            f"<b>Добавил файл: {len(codes)} КИЗ. Всего в общей партии: {total_codes} КИЗ.</b>",
             reply_markup=MAIN_KEYBOARD,
+            parse_mode="HTML",
         )
         return
 
     context.user_data["awaiting_batch_number"] = True
     await update.message.reply_text(
-        f"Получил КИЗов: {total_codes}. Если файлов несколько, отправьте все файлы сейчас. Потом напишите номер партии, например: 0295",
+        f"<b>Получил КИЗов: {total_codes}. Если файлов несколько, отправьте все файлы сейчас. Потом напишите номер партии, например: 0295</b>",
         reply_markup=MAIN_KEYBOARD,
+        parse_mode="HTML",
     )
 
 
