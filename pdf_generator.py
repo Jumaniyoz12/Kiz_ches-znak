@@ -115,8 +115,8 @@ def _draw_info_page(canvas: Canvas, info: dict[str, str]) -> None:
     canvas.setLineWidth(0.25)
     canvas.rect(0.8 * mm, 0.8 * mm, LABEL_W - 1.6 * mm, LABEL_H - 1.6 * mm)
 
-    canvas.setFont(FONT_BOLD, 8.4)
-    canvas.drawCentredString(LABEL_W / 2, from_top(1.4 * mm, 4 * mm), "ИНФО ПАРТИИ")
+    canvas.setFont(FONT_BOLD, 10.8)
+    canvas.drawCentredString(LABEL_W / 2, from_top(0.7 * mm, 4 * mm), "ИНФО ПАРТИИ")
 
     rows = [
         ("Дата", info.get("date", "")),
@@ -130,17 +130,18 @@ def _draw_info_page(canvas: Canvas, info: dict[str, str]) -> None:
         ("Поставщик", info.get("supplier", "")),
     ]
 
-    y = from_top(7.4 * mm, 2.2 * mm)
+    y = from_top(6.4 * mm, 2.2 * mm)
     for label, value in rows:
-        label_size = 4.8 if label in ("Дата", "Партия") else 4.1
-        value_size = 5.3 if label in ("Дата", "Партия") else 4.4
+        is_main = label in ("Дата", "Партия")
+        label_size = 6.0 if is_main else 5.0
+        value_size = 7.0 if is_main else 5.5
         canvas.setFont(FONT_BOLD, label_size)
         canvas.drawString(2 * mm, y, f"{label}:")
         canvas.setFont(FONT_BOLD, value_size)
         canvas.drawString(18 * mm, y, _fit_text(value, 37 * mm, FONT_BOLD, value_size))
-        y -= 3.35 * mm if label in ("Дата", "Партия") else 3.05 * mm
+        y -= 3.75 * mm if is_main else 3.05 * mm
 
-    canvas.setFont(FONT_BOLD, 3.0)
+    canvas.setFont(FONT_BOLD, 3.5)
     canvas.drawRightString(LABEL_W - 2 * mm, 2.0 * mm, "Последняя страница не для товара")
 
 def _draw_label(canvas: Canvas, item: LabelItem, include_mark_code: bool = True) -> None:
@@ -329,6 +330,7 @@ def _register_fonts() -> None:
         return
     pdfmetrics.registerFont(TTFont(FONT_REGULAR, "DejaVuSans.ttf"))
     pdfmetrics.registerFont(TTFont(FONT_BOLD, "DejaVuSans-Bold.ttf"))
+
 
 
 
