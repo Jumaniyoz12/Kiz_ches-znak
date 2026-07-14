@@ -318,19 +318,26 @@ def _fit_text(text: str, max_width: float, font: str, size: float) -> str:
         result = result[:-1]
     return result + ellipsis if result else ""
 
-
 def _register_fonts() -> None:
     if FONT_REGULAR in pdfmetrics.getRegisteredFontNames():
         return
-    regular = Path("C:/Windows/Fonts/arial.ttf")
-    bold = Path("C:/Windows/Fonts/arialbd.ttf")
-    if regular.exists() and bold.exists():
-        pdfmetrics.registerFont(TTFont(FONT_REGULAR, str(regular)))
-        pdfmetrics.registerFont(TTFont(FONT_BOLD, str(bold)))
-        return
+
+    base_dir = Path(__file__).resolve().parent
+    font_pairs = [
+        (base_dir / "fonts" / "arial.ttf", base_dir / "fonts" / "arialbd.ttf"),
+        (Path("C:/Windows/Fonts/arial.ttf"), Path("C:/Windows/Fonts/arialbd.ttf")),
+        (Path("/usr/share/fonts/truetype/msttcorefonts/Arial.ttf"), Path("/usr/share/fonts/truetype/msttcorefonts/Arial_Bold.ttf")),
+        (Path("/usr/share/fonts/truetype/msttcorefonts/arial.ttf"), Path("/usr/share/fonts/truetype/msttcorefonts/arialbd.ttf")),
+    ]
+
+    for regular, bold in font_pairs:
+        if regular.exists() and bold.exists():
+            pdfmetrics.registerFont(TTFont(FONT_REGULAR, str(regular)))
+            pdfmetrics.registerFont(TTFont(FONT_BOLD, str(bold)))
+            return
+
     pdfmetrics.registerFont(TTFont(FONT_REGULAR, "DejaVuSans.ttf"))
     pdfmetrics.registerFont(TTFont(FONT_BOLD, "DejaVuSans-Bold.ttf"))
-
 
 
 
