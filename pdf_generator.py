@@ -339,10 +339,3 @@ def _register_fonts() -> None:
     pdfmetrics.registerFont(TTFont(FONT_REGULAR, "DejaVuSans.ttf"))
     pdfmetrics.registerFont(TTFont(FONT_BOLD, "DejaVuSans-Bold.ttf"))
 
-
-
-
-
-
-
-

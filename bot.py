@@ -356,6 +356,10 @@ def build_items_with_report(products: list[Product], codes: list[str]) -> dict:
         gtin14 = extract_gtin(code)
         gtin = normalize_gtin(gtin14)
         base_row = {"Номер": str(index), "GTIN": gtin or "", "КИЗ": code}
+        structure_error = validate_kiz_structure(code)
+        if structure_error:
+            invalid_gtin.append({**base_row, "РџСЂРёС‡РёРЅР°": structure_error})
+            continue
         if not gtin or len(gtin) != 13 or not gtin.startswith("470"):
             invalid_gtin.append({**base_row, "Причина": "GTIN должен быть 13 цифр и начинаться с 470"})
             continue
@@ -650,15 +654,24 @@ def safe_filename(value: str) -> str:
 
 def read_codes_from_file(path: Path) -> list[str]:
     text = path.read_text(encoding="utf-8-sig")
-    extracted = extract_marking_codes(text)
-    if extracted:
-        return extracted
-    if path.suffix.lower() == ".txt":
-        return [line.strip() for line in text.splitlines() if line.strip()]
-    return read_codes_from_csv(text)
+    return read_codes_line_by_line(text)
+
+
+def read_codes_line_by_line(text: str) -> list[str]:
+    # Important: one physical line is one KIZ. Do not split by regex inside crypto text.
+    codes: list[str] = []
+    for line in text.splitlines():
+        code = clean_marking_code(line)
+        if not code:
+            continue
+        if code.strip().lower() in CODE_HEADERS:
+            continue
+        codes.append(code)
+    return codes
 
 
 def extract_marking_codes(text: str) -> list[str]:
+    # Used only for plain Telegram messages, not for uploaded CSV/TXT files.
     starts = [match.start() for match in CODE_START_RE.finditer(text)]
     if not starts:
         return []
@@ -673,26 +686,63 @@ def extract_marking_codes(text: str) -> list[str]:
 
 
 def clean_marking_code(value: str) -> str:
+    value = str(value or "")
     value = value.replace("\ufeff", "")
-    value = value.replace("\r", "").replace("\n", "").replace("\t", "")
-    return value.strip().strip("\"',; ")
+
+    gs = "\x1d"
+    for marker in ("\\x1d", "<GS>", "[GS]", "{GS}"):
+        value = value.replace(marker, gs)
+    value = value.replace(chr(0x241D), gs)    # visible GS symbol
+    value = value.replace(chr(0x100000), gs)  # private-use marker shown by some scanners
+
+    # CSV escaped quote -> real quote.
+    value = value.replace('""', '"')
+
+    # Some exporters/scanners turn GS into a plain space before AI 91/92.
+    value = re.sub(r"\s+91", gs + "91", value)
+    value = re.sub(r"\s+92", gs + "92", value)
+
+    # Real KIZ must not contain ordinary spaces/tabs/newlines.
+    value = re.sub(r"[ \t\r\n]+", "", value)
+    return value.strip()
 
 
 def read_codes_from_csv(text: str) -> list[str]:
-    rows = list(csv.reader(text.splitlines()))
-    if not rows:
-        return []
+    return read_codes_line_by_line(text)
 
-    header = [cell.strip().lower() for cell in rows[0]]
-    code_col = next((i for i, name in enumerate(header) if any(key in name for key in CODE_HEADERS)), None)
 
-    if code_col is not None:
-        data_rows = rows[1:]
-        codes = [row[code_col].strip() for row in data_rows if code_col < len(row) and row[code_col].strip()]
-    else:
-        codes = [row[0].strip() for row in rows if row and row[0].strip()]
+def validate_kiz_structure(code: str) -> str:
+    code = clean_marking_code(code)
+    if not code:
+        return "EMPTY_KIZ"
+    if not code.startswith("01"):
+        return "MUST_START_WITH_01"
+    if len(code) < 31:
+        return "KIZ_TOO_SHORT"
 
-    return [code for code in codes if code.strip().lower() not in CODE_HEADERS]
+    gtin14 = code[2:16]
+    if len(gtin14) != 14 or not gtin14.isdigit():
+        return "GTIN_AFTER_01_MUST_BE_14_DIGITS"
+    if code[16:18] != "21":
+        return "AI_21_MISSING_AFTER_GTIN"
+
+    gs = "\x1d"
+    if gs + "91" not in code:
+        return "GS_91_MISSING"
+    if gs + "92" not in code:
+        return "GS_92_MISSING"
+
+    pos_91 = code.find(gs + "91")
+    pos_92 = code.find(gs + "92")
+    if pos_92 <= pos_91:
+        return "AI_92_MUST_BE_AFTER_AI_91"
+    if not code[18:pos_91]:
+        return "SERIAL_AFTER_21_IS_EMPTY"
+    if not code[pos_91 + 3:pos_92]:
+        return "CRYPTO_91_IS_EMPTY"
+    if not code[pos_92 + 3:]:
+        return "CRYPTO_92_IS_EMPTY"
+    return ""
 
 
 def main() -> None:
@@ -713,6 +763,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 
