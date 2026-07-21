@@ -219,6 +219,10 @@ async def make_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, codes: li
         report_text = build_analysis_message(analysis)
         await update.message.reply_text(report_text, reply_markup=MAIN_KEYBOARD)
 
+        control_report_path = temp_dir / "control_report.csv"
+        write_rows_csv(control_report_path, analysis["control_rows"])
+        await update.message.reply_document(document=control_report_path.open("rb"), filename=control_report_path.name)
+
         if analysis["duplicate_used"]:
             report_path = temp_dir / "used_kiz_duplicates.csv"
             write_rows_csv(report_path, analysis["duplicate_used"])
@@ -342,36 +346,110 @@ def get_products(sheet_url: str):
 
 
 
+def _gtin_keys(value: str | None) -> set[str]:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    keys: set[str] = set()
+    if digits:
+        keys.add(normalize_gtin(digits))
+    if len(digits) == 13:
+        keys.add("0" + digits)
+    if len(digits) == 14 and digits.startswith("0"):
+        keys.add(digits[1:])
+    return {key for key in keys if key}
+
+def _product_report_fields(product: Product | None) -> dict[str, str]:
+    if product is None:
+        return {
+            "Р‘СЂРµРЅРґ": "",
+            "РџСЂРµРґРјРµС‚": "",
+            "РђСЂС‚РёРєСѓР» РїСЂРѕРґР°РІС†Р°": "",
+            "РђСЂС‚РёРєСѓР» WB": "",
+            "Р Р°Р·РјРµСЂ": "",
+            "Р¦РІРµС‚": "",
+            "РџРѕСЃС‚Р°РІС‰РёРє": "",
+            "Р‘Р°СЂРєРѕРґ": "",
+            "GTIN С‚РѕРІР°СЂР°": "",
+        }
+    return {
+        "Р‘СЂРµРЅРґ": product.brand,
+        "РџСЂРµРґРјРµС‚": product.subject,
+        "РђСЂС‚РёРєСѓР» РїСЂРѕРґР°РІС†Р°": product.seller_article,
+        "РђСЂС‚РёРєСѓР» WB": product.wb_article,
+        "Р Р°Р·РјРµСЂ": product.size,
+        "Р¦РІРµС‚": product.color,
+        "РџРѕСЃС‚Р°РІС‰РёРє": product.supplier,
+        "Р‘Р°СЂРєРѕРґ": product.barcode,
+        "GTIN С‚РѕРІР°СЂР°": product.gtin,
+    }
+
+
+def _control_row(index: int, code: str, gtin: str, status: str, reason: str, product: Product | None = None) -> dict[str, str]:
+    row = {
+        "РЎС‚Р°С‚СѓСЃ": status,
+        "РџСЂРёС‡РёРЅР°": reason,
+        "РќРѕРјРµСЂ": str(index),
+        "GTIN РљРР—": gtin or "",
+        "РљРР—": code,
+    }
+    row.update(_product_report_fields(product))
+    return row
+
+
 def build_items_with_report(products: list[Product], codes: list[str]) -> dict:
     validator = LocalCodeValidator()
-    product_by_gtin = {normalize_gtin(product.gtin): product for product in products if normalize_gtin(product.gtin)}
+    product_by_gtin: dict[str, Product] = {}
+    for product in products:
+        for key in _gtin_keys(product.gtin):
+            product_by_gtin[key] = product
     used_codes = load_used_codes()
     items: list[LabelItem] = []
     invalid_gtin: list[dict[str, str]] = []
     not_found: list[dict[str, str]] = []
     duplicate_used: list[dict[str, str]] = []
-    seen_in_file = Counter(codes)
+    control_rows: list[dict[str, str]] = []
+    cleaned_codes = [clean_marking_code(code) for code in codes]
+    seen_in_file = Counter(cleaned_codes)
 
-    for index, code in enumerate(codes, start=1):
+    for index, code in enumerate(cleaned_codes, start=1):
         gtin14 = extract_gtin(code)
         gtin = normalize_gtin(gtin14)
-        base_row = {"Номер": str(index), "GTIN": gtin or "", "КИЗ": code}
         structure_error = validate_kiz_structure(code)
         if structure_error:
-            invalid_gtin.append({**base_row, "РџСЂРёС‡РёРЅР°": structure_error})
+            row = _control_row(index, code, gtin or "", "ERROR", structure_error)
+            invalid_gtin.append(row)
+            control_rows.append(row)
             continue
+
         if not gtin or len(gtin) != 13 or not gtin.startswith("470"):
-            invalid_gtin.append({**base_row, "Причина": "GTIN должен быть 13 цифр и начинаться с 470"})
+            reason = "GTIN РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ 13 С†РёС„СЂ Рё РЅР°С‡РёРЅР°С‚СЊСЃСЏ СЃ 470"
+            row = _control_row(index, code, gtin or "", "ERROR", reason)
+            invalid_gtin.append(row)
+            control_rows.append(row)
             continue
-        product = product_by_gtin.get(gtin)
+
+        product = None
+        for key in _gtin_keys(gtin14):
+            product = product_by_gtin.get(key)
+            if product is not None:
+                break
         if product is None:
-            not_found.append({**base_row, "Причина": "GTIN не найден в Google Sheets/локальной базе"})
+            reason = "GTIN РЅРµ РЅР°Р№РґРµРЅ РІ Google Sheets/Р»РѕРєР°Р»СЊРЅРѕР№ Р±Р°Р·Рµ"
+            row = _control_row(index, code, gtin, "NOT_FOUND", reason)
+            not_found.append(row)
+            control_rows.append(row)
             continue
+
+        status = "OK"
+        reason = ""
         if code in used_codes:
             old = used_codes[code]
-            duplicate_used.append({**base_row, "Причина": f"Уже печатался {old.get('printed_at', '')} файл {old.get('file_name', '')}"})
+            status = "DUPLICATE_USED"
+            reason = f"РЈР¶Рµ РїРµС‡Р°С‚Р°Р»СЃСЏ {old.get('printed_at', '')} С„Р°Р№Р» {old.get('file_name', '')}"
+            duplicate_used.append(_control_row(index, code, gtin, status, reason, product))
+
         mark_code = validator.check_code(code, expected_gtin=product.gtin)
         items.append(LabelItem(product=product, mark_code=mark_code, index=len(items) + 1))
+        control_rows.append(_control_row(index, code, gtin, status, reason, product))
 
     duplicates_in_file = sum(count - 1 for count in seen_in_file.values() if count > 1)
     return {
@@ -379,6 +457,7 @@ def build_items_with_report(products: list[Product], codes: list[str]) -> dict:
         "invalid_gtin": invalid_gtin,
         "not_found": not_found,
         "duplicate_used": duplicate_used,
+        "control_rows": control_rows,
         "duplicates_in_file": duplicates_in_file,
         "total": len(codes),
     }
@@ -654,20 +733,36 @@ def safe_filename(value: str) -> str:
 
 def read_codes_from_file(path: Path) -> list[str]:
     text = path.read_text(encoding="utf-8-sig")
+    if path.suffix.lower() == ".csv":
+        return read_codes_from_csv(text)
     return read_codes_line_by_line(text)
 
 
 def read_codes_line_by_line(text: str) -> list[str]:
     # Important: one physical line is one KIZ. Do not split by regex inside crypto text.
     codes: list[str] = []
-    for line in text.splitlines():
-        code = clean_marking_code(line)
+    for line in text.split("\n"):
+        code = clean_marking_code(line.rstrip("\r"))
         if not code:
             continue
         if code.strip().lower() in CODE_HEADERS:
             continue
         codes.append(code)
     return codes
+
+
+def _best_code_from_csv_row(row: list[str]) -> str:
+    # CSV wraps KIZ values with quotes and escapes internal quotes as "".
+    # After csv.reader parses the row, the real cell text is restored.
+    for cell in row:
+        code = clean_marking_code(cell)
+        if code and code.strip().lower() not in CODE_HEADERS and code.startswith("01"):
+            return code
+    for cell in row:
+        code = clean_marking_code(cell)
+        if code and code.strip().lower() not in CODE_HEADERS:
+            return code
+    return ""
 
 
 def extract_marking_codes(text: str) -> list[str]:
@@ -692,8 +787,8 @@ def clean_marking_code(value: str) -> str:
     gs = "\x1d"
     for marker in ("\\x1d", "<GS>", "[GS]", "{GS}"):
         value = value.replace(marker, gs)
-    value = value.replace(chr(0x241D), gs)    # visible GS symbol
-    value = value.replace(chr(0x100000), gs)  # private-use marker shown by some scanners
+    value = value.replace(chr(0x241D), gs)
+    value = value.replace(chr(0x100000), gs)
 
     # CSV escaped quote -> real quote.
     value = value.replace('""', '"')
@@ -703,12 +798,22 @@ def clean_marking_code(value: str) -> str:
     value = re.sub(r"\s+92", gs + "92", value)
 
     # Real KIZ must not contain ordinary spaces/tabs/newlines.
-    value = re.sub(r"[ \t\r\n]+", "", value)
+    value = re.sub(r"[ \t\r\n]+", "", value).strip()
+
+    # Remove only wrapping quotes around the whole KIZ, not quotes inside serial.
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        value = value[1:-1]
     return value.strip()
 
 
 def read_codes_from_csv(text: str) -> list[str]:
-    return read_codes_line_by_line(text)
+    codes: list[str] = []
+    reader = csv.reader(text.split("\n"))
+    for row in reader:
+        code = _best_code_from_csv_row(row)
+        if code:
+            codes.append(code)
+    return codes
 
 
 def validate_kiz_structure(code: str) -> str:
@@ -763,6 +868,10 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
 
 
 
