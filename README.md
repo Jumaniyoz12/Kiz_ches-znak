@@ -45,8 +45,19 @@ GTIN может быть 13 цифр, например `4700411459829`. В ко�
 
 ## Проверка локально без Telegram
 
+Сначала создайте окружение и установите зависимости:
+
 ```powershell
-& "C:\Users\user\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -m labelbot.cli `
+python -m venv .venv
+& ".\.venv\Scripts\python.exe" -m pip install -r requirements.txt
+& ".\.venv\Scripts\python.exe" check_import.py
+& ".\.venv\Scripts\python.exe" check_datamatrix.py
+```
+
+Генерация из тестовых CSV:
+
+```powershell
+& ".\.venv\Scripts\python.exe" cli.py `
   --nomenclature samples/nomenclature.csv `
   --gtin samples/gtin.csv `
   --codes samples/codes.txt `
@@ -56,7 +67,7 @@ GTIN может быть 13 цифр, например `4700411459829`. В ко�
 Или напрямую из Google Sheets:
 
 ```powershell
-& "C:\Users\user\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -m labelbot.cli `
+& ".\.venv\Scripts\python.exe" cli.py `
   --google-sheet-url "https://docs.google.com/spreadsheets/d/ВАШ_ID/edit" `
   --codes samples/codes.txt `
   --out output/labels.pdf
@@ -65,7 +76,20 @@ GTIN может быть 13 цифр, например `4700411459829`. В ко�
 ## Запуск Telegram-бота
 
 ```powershell
-& "C:\Users\user\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -m pip install -r requirements.txt
 $env:TELEGRAM_BOT_TOKEN="ВАШ_ТОКЕН"
-& "C:\Users\user\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -m labelbot.bot
+& ".\.venv\Scripts\python.exe" main.py
+```
+
+## Проверка DataMatrix в PDF
+
+КИЗ кодируется как GS1 DataMatrix с обязательным FNC1 (`]d2`). Перед отправкой бот
+рендерит все страницы каждого PDF и повторно считывает каждый DataMatrix. Если код
+не читается или отличается от исходного КИЗ, PDF пользователю не отправляется.
+На тестовом компьютере полная проверка 1000 страниц заняла около 6 секунд.
+
+При необходимости проверку можно ограничить, например первыми/средними/последними
+20 страницами:
+
+```powershell
+$env:PDF_VERIFY_MAX_PAGES="20"
 ```

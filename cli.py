@@ -5,6 +5,7 @@ import argparse
 from data import build_label_items, merge_products, read_codes, read_csv_rows, read_products
 from google_sheets import read_google_sheet_csv
 from pdf_generator import create_labels_pdf
+from pdf_verifier import verify_pdf_datamatrix
 from validator import LocalCodeValidator
 
 
@@ -28,13 +29,14 @@ def main() -> None:
         products = merge_products(read_csv_rows(args.nomenclature), read_csv_rows(args.gtin))
     elif args.products:
         products = read_products(args.products)
-    else   :
+    else:
         raise SystemExit("Укажите --google-sheet-url или пару --nomenclature/--gtin")
 
     codes = read_codes(args.codes)
     items = build_label_items(products, codes, LocalCodeValidator())
     output = create_labels_pdf(items, args.out)
-    print(f"PDF готов: {output}")
+    checked_pages = verify_pdf_datamatrix(output, [item.mark_code.raw for item in items])
+    print(f"PDF готов: {output}. DataMatrix проверен на {len(checked_pages)} стр.")
 
 
 if __name__ == "__main__":

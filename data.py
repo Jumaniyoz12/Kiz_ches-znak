@@ -78,17 +78,29 @@ def merge_products(nomenclature_rows: list[dict[str, str]], gtin_rows: list[dict
 def build_label_items(products: list[Product], codes: list[str], validator: LocalCodeValidator) -> list[LabelItem]:
     product_by_gtin = {normalize_gtin(product.gtin): product for product in products if product.gtin}
     items: list[LabelItem] = []
-    unused_products = iter(products)
+    errors: list[str] = []
 
     for index, code in enumerate(codes, start=1):
         code_gtin = normalize_gtin(extract_gtin(code))
-        product = product_by_gtin.get(code_gtin) if code_gtin else None
+        if not code_gtin:
+            errors.append(f"Код #{index}: GTIN не найден в КИЗ")
+            continue
+
+        product = product_by_gtin.get(code_gtin)
         if product is None:
-            product = next(unused_products, None)
-        if product is None:
-            raise ValueError(f"Для кода #{index} не найден товар")
+            errors.append(f"Код #{index}: товар с GTIN {code_gtin} не найден")
+            continue
+
         mark_code = validator.check_code(code, expected_gtin=product.gtin)
+        if not mark_code.is_valid:
+            errors.append(f"Код #{index}: {mark_code.message}")
+            continue
         items.append(LabelItem(product=product, mark_code=mark_code, index=index))
+
+    if errors:
+        preview = "\n".join(errors[:10])
+        suffix = f"\n... и ещё {len(errors) - 10}" if len(errors) > 10 else ""
+        raise ValueError(f"PDF не создан из-за ошибок сопоставления:\n{preview}{suffix}")
 
     return items
 

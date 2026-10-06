@@ -21,7 +21,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 from data import merge_products, only_digits
 from google_sheets import read_google_sheet_csv
-from pdf_generator import create_datamatrix_image, create_labels_pdf
+from pdf_generator import create_datamatrix_image, create_labels_pdf, prepare_marking_code_for_datamatrix
+from pdf_verifier import verify_pdf_datamatrix
 from models import LabelItem, MarkCode, Product
 from validator import LocalCodeValidator, extract_gtin, normalize_gtin
 
@@ -31,6 +32,7 @@ GTIN_SHEET = "GTIN"
 CODE_HEADERS = ("киз", "код", "код маркировки", "честный знак", "datamatrix", "data matrix", "mark_code")
 CODE_START_RE = re.compile(r"(?=01\d{14})")
 CACHE_TTL_SECONDS = 600
+PDF_VERIFY_MAX_PAGES = int(os.environ.get("PDF_VERIFY_MAX_PAGES", "0"))
 PRODUCTS_CACHE: dict[tuple[str, str, str], tuple[float, list]] = {}
 APP_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = APP_DIR / "output"
@@ -76,13 +78,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("Пришлите КИЗы файлом .txt или .csv.")
         return
 
-    temp_dir = Path(tempfile.mkdtemp(prefix="labelbot_"))
-    codes_path = temp_dir / file_name
-    telegram_file = await document.get_file()
-    await telegram_file.download_to_drive(codes_path)
-
     try:
-        codes = read_codes_from_file(codes_path)
+        with tempfile.TemporaryDirectory(prefix="labelbot_") as temp_dir_name:
+            codes_path = Path(temp_dir_name) / safe_filename(file_name)
+            telegram_file = await document.get_file()
+            await telegram_file.download_to_drive(codes_path)
+            codes = read_codes_from_file(codes_path)
     except Exception as exc:
         await update.message.reply_text(f"Не смог прочитать файл с КИЗами: {exc}")
         return
@@ -210,45 +211,55 @@ async def make_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, codes: li
         await update.message.reply_text("Не нашел КИЗы в сообщении или файле.")
         return
 
-    temp_dir = Path(tempfile.mkdtemp(prefix="labelbot_"))
-
     try:
-        await update.message.reply_text(f"Получил КИЗов: {len(codes)}. Проверяю GTIN и товары...", reply_markup=MAIN_KEYBOARD)
-        products = get_products(sheet_url)
-        analysis = build_items_with_report(products, codes)
-        report_text = build_analysis_message(analysis)
-        await update.message.reply_text(report_text, reply_markup=MAIN_KEYBOARD)
+        with tempfile.TemporaryDirectory(prefix="labelbot_") as temp_dir_name:
+            temp_dir = Path(temp_dir_name)
+            await update.message.reply_text(f"Получил КИЗов: {len(codes)}. Проверяю GTIN и товары...", reply_markup=MAIN_KEYBOARD)
+            products = get_products(sheet_url)
+            analysis = build_items_with_report(products, codes)
+            report_text = build_analysis_message(analysis)
+            await update.message.reply_text(report_text, reply_markup=MAIN_KEYBOARD)
 
-        control_report_path = temp_dir / "control_report.csv"
-        write_rows_csv(control_report_path, analysis["control_rows"])
-        await update.message.reply_document(document=control_report_path.open("rb"), filename=control_report_path.name)
+            control_report_path = temp_dir / "control_report.csv"
+            write_rows_csv(control_report_path, analysis["control_rows"])
+            with control_report_path.open("rb") as report_file:
+                await update.message.reply_document(document=report_file, filename=control_report_path.name)
 
-        if analysis["duplicate_used"]:
-            report_path = temp_dir / "used_kiz_duplicates.csv"
-            write_rows_csv(report_path, analysis["duplicate_used"])
-            await update.message.reply_document(document=report_path.open("rb"), filename=report_path.name)
+            if analysis["duplicate_used"]:
+                report_path = temp_dir / "used_kiz_duplicates.csv"
+                write_rows_csv(report_path, analysis["duplicate_used"])
+                with report_path.open("rb") as report_file:
+                    await update.message.reply_document(document=report_file, filename=report_path.name)
 
-        if analysis["not_found"] or analysis["invalid_gtin"]:
-            report_path = temp_dir / "not_found.csv"
-            write_rows_csv(report_path, analysis["not_found"] + analysis["invalid_gtin"])
-            await update.message.reply_document(document=report_path.open("rb"), filename=report_path.name)
-            if not analysis["items"]:
-                await update.message.reply_text("Нет этикеток для печати: все КИЗы с ошибками.")
-                return
+            if analysis["not_found"] or analysis["invalid_gtin"]:
+                report_path = temp_dir / "not_found.csv"
+                write_rows_csv(report_path, analysis["not_found"] + analysis["invalid_gtin"])
+                with report_path.open("rb") as report_file:
+                    await update.message.reply_document(document=report_file, filename=report_path.name)
+                if not analysis["items"]:
+                    await update.message.reply_text("Нет этикеток для печати: все КИЗы с ошибками.")
+                    return
 
-        items = analysis["items"]
-        readability = check_datamatrix_readability(items[0].mark_code.raw) if items else ""
-        outputs = create_auto_outputs(items, temp_dir, batch_number=batch_number)
-        out_name = ", ".join(name for _, name in outputs)
-        remember_printed_codes(items, out_name, update.effective_user)
+            items = analysis["items"]
+            outputs = create_auto_outputs(items, temp_dir, batch_number=batch_number)
+            for output_path, file_name in outputs:
+                with output_path.open("rb") as output_file:
+                    await update.message.reply_document(document=output_file, filename=file_name)
+
+            out_name = ", ".join(name for _, name in outputs)
+            remember_printed_codes(items, out_name, update.effective_user)
+            verify_scope = (
+                f"до {PDF_VERIFY_MAX_PAGES} страниц каждого PDF"
+                if PDF_VERIFY_MAX_PAGES > 0
+                else "все страницы каждого PDF"
+            )
+            await update.message.reply_text(
+                f"✅ PDF-проверка пройдена: {verify_scope} читаются как GS1 DataMatrix (]d2).",
+                reply_markup=MAIN_KEYBOARD,
+            )
     except Exception as exc:
         await update.message.reply_text(f"Не удалось создать PDF: {human_error(exc)}")
         return
-
-    for output_path, file_name in outputs:
-        await update.message.reply_document(document=output_path.open("rb"), filename=file_name)
-    if readability:
-        await update.message.reply_text(readability, reply_markup=MAIN_KEYBOARD)
 
 async def stat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -277,15 +288,15 @@ async def make_barcode_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE, q
 
         items = [LabelItem(product=product, mark_code=MarkCode(raw="", gtin=product.gtin, is_valid=True, message=""), index=i)
                  for i, product in enumerate(found, start=1)]
-        temp_dir = Path(tempfile.mkdtemp(prefix="labelbot_"))
-        pdf_name = build_barcode_filename(found)
-        output_path = temp_dir / pdf_name
-        create_labels_pdf(items, output_path, include_mark_code=False)
+        with tempfile.TemporaryDirectory(prefix="labelbot_") as temp_dir_name:
+            pdf_name = build_barcode_filename(found)
+            output_path = Path(temp_dir_name) / pdf_name
+            create_labels_pdf(items, output_path, include_mark_code=False)
+            with output_path.open("rb") as output_file:
+                await update.message.reply_document(document=output_file, filename=pdf_name)
     except Exception as exc:
         await update.message.reply_text(f"Не удалось создать PDF: {exc}")
         return
-
-    await update.message.reply_document(document=output_path.open("rb"), filename=pdf_name)
 
 
 def parse_barcode_request(text: str):
@@ -360,36 +371,36 @@ def _gtin_keys(value: str | None) -> set[str]:
 def _product_report_fields(product: Product | None) -> dict[str, str]:
     if product is None:
         return {
-            "Р‘СЂРµРЅРґ": "",
-            "РџСЂРµРґРјРµС‚": "",
-            "РђСЂС‚РёРєСѓР» РїСЂРѕРґР°РІС†Р°": "",
-            "РђСЂС‚РёРєСѓР» WB": "",
-            "Р Р°Р·РјРµСЂ": "",
-            "Р¦РІРµС‚": "",
-            "РџРѕСЃС‚Р°РІС‰РёРє": "",
-            "Р‘Р°СЂРєРѕРґ": "",
-            "GTIN С‚РѕРІР°СЂР°": "",
+            "Бренд": "",
+            "Предмет": "",
+            "Артикул продавца": "",
+            "Артикул WB": "",
+            "Размер": "",
+            "Цвет": "",
+            "Поставщик": "",
+            "Баркод": "",
+            "GTIN товара": "",
         }
     return {
-        "Р‘СЂРµРЅРґ": product.brand,
-        "РџСЂРµРґРјРµС‚": product.subject,
-        "РђСЂС‚РёРєСѓР» РїСЂРѕРґР°РІС†Р°": product.seller_article,
-        "РђСЂС‚РёРєСѓР» WB": product.wb_article,
-        "Р Р°Р·РјРµСЂ": product.size,
-        "Р¦РІРµС‚": product.color,
-        "РџРѕСЃС‚Р°РІС‰РёРє": product.supplier,
-        "Р‘Р°СЂРєРѕРґ": product.barcode,
-        "GTIN С‚РѕРІР°СЂР°": product.gtin,
+        "Бренд": product.brand,
+        "Предмет": product.subject,
+        "Артикул продавца": product.seller_article,
+        "Артикул WB": product.wb_article,
+        "Размер": product.size,
+        "Цвет": product.color,
+        "Поставщик": product.supplier,
+        "Баркод": product.barcode,
+        "GTIN товара": product.gtin,
     }
 
 
 def _control_row(index: int, code: str, gtin: str, status: str, reason: str, product: Product | None = None) -> dict[str, str]:
     row = {
-        "РЎС‚Р°С‚СѓСЃ": status,
-        "РџСЂРёС‡РёРЅР°": reason,
-        "РќРѕРјРµСЂ": str(index),
-        "GTIN РљРР—": gtin or "",
-        "РљРР—": code,
+        "Статус": status,
+        "Причина": reason,
+        "Номер": str(index),
+        "GTIN КИЗ": gtin or "",
+        "КИЗ": code,
     }
     row.update(_product_report_fields(product))
     return row
@@ -409,10 +420,17 @@ def build_items_with_report(products: list[Product], codes: list[str]) -> dict:
     control_rows: list[dict[str, str]] = []
     cleaned_codes = [clean_marking_code(code) for code in codes]
     seen_in_file = Counter(cleaned_codes)
+    accepted_in_file: set[str] = set()
 
     for index, code in enumerate(cleaned_codes, start=1):
         gtin14 = extract_gtin(code)
         gtin = normalize_gtin(gtin14)
+        if code in accepted_in_file:
+            row = _control_row(index, code, gtin or "", "DUPLICATE_IN_FILE", "Повтор КИЗ внутри текущего файла")
+            control_rows.append(row)
+            continue
+        accepted_in_file.add(code)
+
         structure_error = validate_kiz_structure(code)
         if structure_error:
             row = _control_row(index, code, gtin or "", "ERROR", structure_error)
@@ -421,7 +439,7 @@ def build_items_with_report(products: list[Product], codes: list[str]) -> dict:
             continue
 
         if not gtin or len(gtin) != 13 or not gtin.startswith("470"):
-            reason = "GTIN РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ 13 С†РёС„СЂ Рё РЅР°С‡РёРЅР°С‚СЊСЃСЏ СЃ 470"
+            reason = "GTIN должен быть 13 цифр и начинаться с 470"
             row = _control_row(index, code, gtin or "", "ERROR", reason)
             invalid_gtin.append(row)
             control_rows.append(row)
@@ -433,7 +451,7 @@ def build_items_with_report(products: list[Product], codes: list[str]) -> dict:
             if product is not None:
                 break
         if product is None:
-            reason = "GTIN РЅРµ РЅР°Р№РґРµРЅ РІ Google Sheets/Р»РѕРєР°Р»СЊРЅРѕР№ Р±Р°Р·Рµ"
+            reason = "GTIN не найден в Google Sheets/локальной базе"
             row = _control_row(index, code, gtin, "NOT_FOUND", reason)
             not_found.append(row)
             control_rows.append(row)
@@ -444,8 +462,11 @@ def build_items_with_report(products: list[Product], codes: list[str]) -> dict:
         if code in used_codes:
             old = used_codes[code]
             status = "DUPLICATE_USED"
-            reason = f"РЈР¶Рµ РїРµС‡Р°С‚Р°Р»СЃСЏ {old.get('printed_at', '')} С„Р°Р№Р» {old.get('file_name', '')}"
-            duplicate_used.append(_control_row(index, code, gtin, status, reason, product))
+            reason = f"Уже печатался {old.get('printed_at', '')}, файл {old.get('file_name', '')}"
+            row = _control_row(index, code, gtin, status, reason, product)
+            duplicate_used.append(row)
+            control_rows.append(row)
+            continue
 
         mark_code = validator.check_code(code, expected_gtin=product.gtin)
         items.append(LabelItem(product=product, mark_code=mark_code, index=len(items) + 1))
@@ -500,6 +521,20 @@ def group_items_by_product(items: list[LabelItem]) -> list[list[LabelItem]]:
     return result
 
 
+def create_verified_labels_pdf(
+    items: list[LabelItem],
+    pdf_path: Path,
+    *,
+    info_page: dict[str, str] | None = None,
+) -> None:
+    create_labels_pdf(items, pdf_path, info_page=info_page)
+    verify_pdf_datamatrix(
+        pdf_path,
+        [item.mark_code.raw for item in items],
+        max_pages=PDF_VERIFY_MAX_PAGES,
+    )
+
+
 def create_auto_outputs(items: list[LabelItem], temp_dir: Path, batch_number: str = "") -> list[tuple[Path, str]]:
     groups = group_items_by_product(items)
     if len(groups) > 3:
@@ -509,7 +544,11 @@ def create_auto_outputs(items: list[LabelItem], temp_dir: Path, batch_number: st
     for grouped_items in groups:
         pdf_name = build_pdf_filename(grouped_items)
         pdf_path = temp_dir / pdf_name
-        create_labels_pdf(grouped_items, pdf_path, info_page=build_info_page(grouped_items, batch_number=batch_number))
+        create_verified_labels_pdf(
+            grouped_items,
+            pdf_path,
+            info_page=build_info_page(grouped_items, batch_number=batch_number),
+        )
         outputs.append((pdf_path, pdf_name))
     return outputs
 
@@ -523,7 +562,11 @@ def create_zip_from_groups(groups: list[list[LabelItem]], temp_dir: Path, batch_
         for grouped_items in groups:
             pdf_name = build_pdf_filename(grouped_items)
             pdf_path = temp_dir / pdf_name
-            create_labels_pdf(grouped_items, pdf_path, info_page=build_info_page(grouped_items, batch_number=batch_number))
+            create_verified_labels_pdf(
+                grouped_items,
+                pdf_path,
+                info_page=build_info_page(grouped_items, batch_number=batch_number),
+            )
             archive.write(pdf_path, arcname=pdf_name)
     return zip_path, zip_name
 
@@ -560,19 +603,20 @@ def create_zip_by_products(items: list[LabelItem], temp_dir: Path) -> tuple[Path
                 grouped_items[idx - 1] = LabelItem(product=item.product, mark_code=item.mark_code, index=idx)
             pdf_name = build_pdf_filename(grouped_items)
             pdf_path = temp_dir / pdf_name
-            create_labels_pdf(grouped_items, pdf_path, info_page=build_info_page(grouped_items))
+            create_verified_labels_pdf(grouped_items, pdf_path, info_page=build_info_page(grouped_items))
             archive.write(pdf_path, arcname=pdf_name)
     return zip_path, zip_name
 
 
 def check_datamatrix_readability(code: str) -> str:
     try:
-        from pylibdmtx.pylibdmtx import decode as decode_datamatrix
+        import zxingcpp
+
         image = create_datamatrix_image(code)
-        decoded = decode_datamatrix(image)
-        if decoded:
-            return "✅ DataMatrix проверен: код создаётся и читается программно."
-        return "⚠️ DataMatrix не прочитался программно. Проверь размер/белое поле перед печатью."
+        decoded = zxingcpp.read_barcode(image, formats=zxingcpp.BarcodeFormat.DataMatrix)
+        if decoded and decoded.bytes == prepare_marking_code_for_datamatrix(code) and decoded.symbology_identifier == "]d2":
+            return "✅ GS1 DataMatrix проверен: код создаётся и читается программно как ]d2."
+        return "⚠️ DataMatrix не прочитался как GS1. PDF не следует печатать."
     except Exception as exc:
         return f"⚠️ Проверка DataMatrix недоступна: {exc}"
 
@@ -789,9 +833,6 @@ def clean_marking_code(value: str) -> str:
         value = value.replace(marker, gs)
     value = value.replace(chr(0x241D), gs)
     value = value.replace(chr(0x100000), gs)
-
-    # CSV escaped quote -> real quote.
-    value = value.replace('""', '"')
 
     # Some exporters/scanners turn GS into a plain space before AI 91/92.
     value = re.sub(r"\s+91", gs + "91", value)

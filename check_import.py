@@ -1,1 +1,6 @@
-﻿import telegram, reportlab; print("ok")
+﻿import pymupdf
+import reportlab
+import telegram
+import zxingcpp
+
+print("dependencies ok")

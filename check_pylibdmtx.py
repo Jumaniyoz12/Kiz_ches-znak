@@ -1,1 +1,1 @@
-﻿from pylibdmtx.pylibdmtx import encode; print("pylibdmtx ok")
+﻿from check_datamatrix import *  # noqa: F401,F403
